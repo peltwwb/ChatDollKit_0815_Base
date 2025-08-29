@@ -33,6 +33,7 @@ namespace ChatdollKit
             Sleep,
             Idle,
             Conversation,
+            Listening,
         }
         public AvatarMode Mode { get; private set; } = AvatarMode.Idle;
         private AvatarMode previousMode = AvatarMode.Idle;
@@ -74,6 +75,25 @@ namespace ChatdollKit
         public List<string> IgnoreWords = new List<string>() { "。", "、", "？", "！" };
         public int WakeLength;
         public string BackgroundRequestPrefix = "$";
+        [SerializeField]
+        [Tooltip("Animator int parameter name for speaking base pose (e.g. 'BaseParam')")]
+        private string speakingBaseParamKey = "BaseParam";
+        [SerializeField]
+        [Tooltip("Animator int value for speaking base pose")]
+        private int speakingBaseParamValue = 0;
+        [SerializeField]
+        [Tooltip("Duration for speaking base pose per frame (seconds)")]
+        private float speakingBaseDuration = 3600f;
+        [Header("Listening base settings")]
+        [SerializeField]
+        [Tooltip("Animator int parameter name for listening base pose (e.g. 'BaseParam')")]
+        private string listeningBaseParamKey = "BaseParam";
+        [SerializeField]
+        [Tooltip("Animator int value for listening base pose")]
+        private int listeningBaseParamValue = 0;
+        [SerializeField]
+        [Tooltip("Duration for a single loop of listening base animation (seconds)")]
+        private float listeningBaseDuration = 60f;
         private AudioMixer characterAudioMixer;
         [SerializeField]
         private string characterVolumeParameter = "CharacterVolume";
@@ -165,6 +185,11 @@ namespace ChatdollKit
             var neutralFaceRequest = new List<FaceExpression>() { new FaceExpression("Neutral") };
             DialogProcessor.OnRequestRecievedAsync = async (text, payloads, token) =>
             {
+                // Exit Listening and enter Conversation immediately when a request arrives
+                // so that Main stops the listening idle loop before processingAnimation starts
+                Mode = AvatarMode.Conversation;
+                modeTimer = conversationTimeout;
+
                 // Control microphone at first before AI's speech
                 if (MicrophoneMuteBy == MicrophoneMuteStrategy.StopDevice)
                 {
@@ -182,6 +207,9 @@ namespace ChatdollKit
                 {
                     MicrophoneManager.SetNoiseGateThresholdDb(VoiceRecognitionRaisedThresholdDB);
                 }
+
+                // Processing開始中はIdleフォールバックを必ず抑止
+                ModelController.SuppressIdleFallback(true);
 
                 // Presentation
                 if (ProcessingPresentations.Count > 0)
@@ -234,17 +262,26 @@ namespace ChatdollKit
                     MicrophoneManager.SetNoiseGateThresholdDb(VoiceRecognitionThresholdDB);
                 }
 
-                if (endConversation)
+                if (!token.IsCancellationRequested)
                 {
-                    // Change to idle mode immediately
-                    Mode = AvatarMode.Idle;
-                    modeTimer = idleTimeout;
-
-                    if (!token.IsCancellationRequested)
+                    if (endConversation)
                     {
-                        // NOTE: Cancel is triggered not only when just canceled but when invoked another chat session
-                        // Restart idling animation and reset face expression
+                        // Conversation fully ended: return to Idle
+                        Mode = AvatarMode.Idle;
+                        modeTimer = idleTimeout;
                         ModelController.StartIdling();
+                        ModelController.SuppressIdleFallback(false); // Idleへ戻るので抑止解除
+                        UserMessageWindow?.Hide();
+                        await ModelController.ChangeIdlingModeAsync("normal");
+                    }
+                    else
+                    {
+                        // Normal turn end: go to Listening and wait for next input
+                        Mode = AvatarMode.Listening;
+                        modeTimer = idleTimeout;
+                        // Do not switch idling mode here to avoid double control with Main.cs
+                        UserMessageWindow?.Show("聞いています");
+                        // Listening開始時にModelController側で抑止解除される
                     }
                 }
             };
@@ -254,10 +291,15 @@ namespace ChatdollKit
                 // Stop speaking immediately
                 ModelController.StopSpeech();
 
-                // Start idling only when no successive dialogs are allocated
+                // Return to Idle when no successive dialogs are allocated
                 if (!forSuccessiveDialog)
                 {
+                    Mode = AvatarMode.Idle;
+                    modeTimer = idleTimeout;
                     ModelController.StartIdling();
+                    ModelController.SuppressIdleFallback(false); // Idleへ戻るので抑止解除
+                    UserMessageWindow?.Hide();
+                    await ModelController.ChangeIdlingModeAsync("normal");
                 }
             };
 #pragma warning restore CS1998
@@ -269,13 +311,33 @@ namespace ChatdollKit
             {
                 // Convert to AnimatedVoiceRequest
                 var avreq = ModelController.ToAnimatedVoiceRequest(contentItem.Text, contentItem.Language);
-                avreq.StartIdlingOnEnd = contentItem.IsFirstItem;
+                // Avoid switching back to Idle between streamed chunks
+                avreq.StartIdlingOnEnd = false;
                 if (contentItem.IsFirstItem)
                 {
                     if (avreq.AnimatedVoices[0].Faces.Count == 0)
                     {
                         // Reset face expression at the beginning of animated voice
                         avreq.AddFace("Neutral");
+                    }
+                }
+
+                // Ensure a base speaking pose when no [anim:] tag is provided
+                // Constructed by Animator parameter key/value (numeric), not by registered name
+                if (ModelController != null && !string.IsNullOrEmpty(speakingBaseParamKey))
+                {
+                    foreach (var frame in avreq.AnimatedVoices)
+                    {
+                        if (frame.Animations == null || frame.Animations.Count == 0)
+                        {
+                            frame.AddAnimation(
+                                speakingBaseParamKey,
+                                speakingBaseParamValue,
+                                speakingBaseDuration,
+                                null,
+                                null
+                            );
+                        }
                     }
                 }
                 contentItem.Data = avreq;
@@ -347,19 +409,21 @@ namespace ChatdollKit
             UpdateMode();
             UpdateCharacterVolume();
 
-            // User message window (Listening...)
+            // User message window (Listening... previous style)
             if (DialogProcessor.Status == DialogProcessor.DialogStatus.Idling)
             {
-                if (Mode == AvatarMode.Conversation)
+                if (Mode == AvatarMode.Listening)
                 {
-                    if (DialogProcessor.Status != previousDialogStatus)
+                    // Entered Listening or returned to Idling -> show label
+                    if (Mode != previousMode || DialogProcessor.Status != previousDialogStatus)
                     {
-                        UserMessageWindow?.Show("Listening...");
+                        UserMessageWindow?.Show("聞いています");
                     }
                 }
                 else
                 {
-                    if (Mode != previousMode)
+                    // Left Listening -> hide label
+                    if (previousMode == AvatarMode.Listening)
                     {
                         UserMessageWindow?.Hide();
                     }
@@ -369,6 +433,20 @@ namespace ChatdollKit
             // Speech listener config
             if (Mode != previousMode)
             {
+                // Start/Stop listening base pose
+                if (Mode == AvatarMode.Listening)
+                {
+                    if (ModelController != null && !string.IsNullOrEmpty(listeningBaseParamKey))
+                    {
+                        var idleAnim = new Model.Animation(listeningBaseParamKey, listeningBaseParamValue, listeningBaseDuration);
+                        ModelController.StartListeningIdle(idleAnim);
+                    }
+                }
+                else if (previousMode == AvatarMode.Listening)
+                {
+                    ModelController?.StopListeningIdle();
+                }
+
                 if (Mode == AvatarMode.Conversation)
                 {
                     SpeechListener.ChangeSessionConfig(
@@ -384,6 +462,12 @@ namespace ChatdollKit
                         minRecordingDuration: idleMinRecordingDuration,
                         maxRecordingDuration: idleMaxRecordingDuration
                     );
+                }
+
+                // Recover normal idling pool whenever coming back to Idle
+                if (Mode == AvatarMode.Idle)
+                {
+                    _ = ModelController.ChangeIdlingModeAsync("normal");
                 }
             }
 
@@ -414,11 +498,19 @@ namespace ChatdollKit
 
             if (Mode == AvatarMode.Conversation)
             {
+                // After conversation timer, fall back to Idle
+                Mode = AvatarMode.Idle;
+                modeTimer = idleTimeout;
+            }
+            else if (Mode == AvatarMode.Listening)
+            {
+                // After listening timer, fall back to Idle (then Idle may go to Sleep later)
                 Mode = AvatarMode.Idle;
                 modeTimer = idleTimeout;
             }
             else if (Mode == AvatarMode.Idle)
             {
+                // After idle timer, go to Sleep
                 Mode = AvatarMode.Sleep;
                 modeTimer = 0.0f;
             }

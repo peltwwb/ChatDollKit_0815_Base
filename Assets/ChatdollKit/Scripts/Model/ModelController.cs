@@ -331,6 +331,7 @@ namespace ChatdollKit.Model
             }
 
             // Speak sequentially
+            isSpeaking = true;
             foreach (var v in voices)
             {
                 if (token.IsCancellationRequested)
@@ -477,6 +478,7 @@ namespace ChatdollKit.Model
 
             // Reset viseme
             lipSyncHelper?.ResetViseme();
+            isSpeaking = false;
         }
 
         // Start downloading voices from web/TTS
@@ -556,6 +558,17 @@ namespace ChatdollKit.Model
             var animationToRun = GetAnimation();
             if (animationToRun == null)
             {
+                // Keep listening/speaking/processing pose without switching to normal idle
+                if (isListeningMode || isSpeaking || suppressIdleFallback)
+                {
+                    // 明示アニメが無いフレームでは直前のベース姿勢を維持
+                    if (currentAnimation != null)
+                    {
+                        animator.SetInteger(currentAnimation.ParameterKey, currentAnimation.ParameterValue);
+                    }
+                    return;
+                }
+
                 // Start idling instead when animationToRun is null
                 // `resetStartTime = false`: When idling, GetIdleAnimation() returns null if idle animation is not timeout.
                 // So, StartIdling() will be called every frame while idle animation is not timeout.
@@ -612,6 +625,59 @@ namespace ChatdollKit.Model
             else
             {
                 return default;
+            }
+        }
+
+        private bool isListeningMode = false;
+        private bool isSpeaking = false;
+        private bool suppressIdleFallback = false;
+        private Animation listeningIdleAnimation;
+        private Animation listeningTriggerAnimation;
+        private bool triggerAnimationRequested = false;
+
+        public void SuppressIdleFallback(bool suppress)
+        {
+            suppressIdleFallback = suppress;
+        }
+
+        public void StartListeningIdle(Animation idleAnim)
+        {
+            isListeningMode = true;
+            suppressIdleFallback = false; // listening開始時点でIdle抑止は解除
+            listeningIdleAnimation = idleAnim;
+            animationStartAt = 0;
+            GetAnimation = GetListeningIdleAnimation;
+        }
+
+        public void StopListeningIdle()
+        {
+            isListeningMode = false;
+            GetAnimation = GetIdleAnimation;
+        }
+
+        public void TriggerListeningAnimation(Animation triggerAnim)
+        {
+            listeningTriggerAnimation = triggerAnim;
+            triggerAnimationRequested = true;
+        }
+
+        private Animation GetListeningIdleAnimation()
+        {
+            if (triggerAnimationRequested && listeningTriggerAnimation != null)
+            {
+                triggerAnimationRequested = false;
+                animationStartAt = 0;
+                return listeningTriggerAnimation;
+            }
+
+            if (currentAnimation == null || animationStartAt == 0 || Time.realtimeSinceStartup - animationStartAt > listeningIdleAnimation.Duration)
+            {
+                animationStartAt = Time.realtimeSinceStartup;
+                return listeningIdleAnimation;
+            }
+            else
+            {
+                return null;
             }
         }
 

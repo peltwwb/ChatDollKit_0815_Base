@@ -4,6 +4,7 @@ using UnityEngine;
 using ChatdollKit.Dialog;
 using ChatdollKit.IO;
 using ChatdollKit.Model;
+using ChatdollKit;
 
 namespace ChatdollKit.Demo
 {
@@ -12,7 +13,30 @@ namespace ChatdollKit.Demo
         // ChatdollKit components
         private ModelController modelController;
         private DialogProcessor dialogProcessor;
+        private AIAvatar aiAvatar;
         private SimpleCamera simpleCamera;
+        private ChatdollKit.SpeechListener.MicrophoneManager microphoneManager;
+
+        [Header("Listening Mode")]
+        [SerializeField]
+        private bool enableListeningMode = false; // Centralize listening base control in AIAvatar
+        [SerializeField]
+        private string listeningIdleBaseName = "generic";
+        [SerializeField]
+        [Range(1f, 300f)]
+        private float listeningIdleDuration = 60f;
+        [SerializeField]
+        private string listeningTriggerAdditiveName = "AGIA_Layer_nodding_once_01";
+        [SerializeField]
+        private string listeningTriggerAdditiveLayer = "Additive Layer";
+        [SerializeField]
+        [Range(0.1f, 10f)]
+        private float listeningTriggerDuration = 2.0f;
+
+        private Model.Animation listeningIdleAnim;
+        private bool listeningTriggerFired = false;
+        private AIAvatar.AvatarMode prevMode = AIAvatar.AvatarMode.Idle;
+        private bool IsListening(AIAvatar.AvatarMode mode) => mode.ToString() == "Listening";
 
         [SerializeField]
         private AGIARegistry.AnimationCollection animationCollectionKey = AGIARegistry.AnimationCollection.AGIAFree;
@@ -24,6 +48,15 @@ namespace ChatdollKit.Demo
             // Get ChatdollKit components
             modelController = gameObject.GetComponent<ModelController>();
             dialogProcessor = gameObject.GetComponent<DialogProcessor>();
+            aiAvatar = gameObject.GetComponent<AIAvatar>();
+
+            if (aiAvatar == null)
+            {
+                aiAvatar = FindFirstObjectByType<AIAvatar>();
+            }
+
+            // Mic manager for input level monitoring
+            microphoneManager = FindFirstObjectByType<ChatdollKit.SpeechListener.MicrophoneManager>();
 
             // Image capture for vision
             if (simpleCamera == null)
@@ -71,12 +104,20 @@ namespace ChatdollKit.Demo
             modelController.AddIdleAnimation("ryote_nobashi", 10.0f, weight: 1);
             modelController.AddIdleAnimation("kami_totonoe", 9.0f, weight: 1);
 
-            modelController.AddIdleAnimation("generic", 5.0f, mode: "listening");
+            // Optional: provide a separate idling pool for 'listening' mode
+            // Use configured duration to keep a stable stand pose
+            modelController.AddIdleAnimation("generic", listeningIdleDuration, mode: "listening");
+
+            // Prebuild listening idle animation (looping stand still)
+            if (enableListeningMode && modelController.IsAnimationRegistered(listeningIdleBaseName))
+            {
+                listeningIdleAnim = modelController.GetRegisteredAnimation(listeningIdleBaseName, listeningIdleDuration);
+            }
 
 
             // Animation and face expression for processing (Use when the response takes a long time)
             var processingAnimation = new List<Model.Animation>();
-            processingAnimation.Add(modelController.GetRegisteredAnimation("concern_right_hand_front", 0.3f));
+            //processingAnimation.Add(modelController.GetRegisteredAnimation("concern_right_hand_front", 0.3f));
             processingAnimation.Add(modelController.GetRegisteredAnimation("concern_right_hand_front", 20.0f, "AGIA_Layer_nodding_once_01", "Additive Layer"));
             var processingFace = new List<FaceExpression>();
             processingFace.Add(new FaceExpression("Blink", 3.0f));
@@ -127,6 +168,48 @@ namespace ChatdollKit.Demo
             //         aiAvatar.UserMessageWindow.Show(azureStreamSpeechListener.RecognizedTextBuffer);
             //     }
             // }
+
+            // Listening mode orchestration
+            if (enableListeningMode && aiAvatar != null)
+            {
+                // Enter/Exit hooks
+                if (prevMode != aiAvatar.Mode)
+                {
+                    if (IsListening(aiAvatar.Mode) && listeningIdleAnim != null)
+                    {
+                        modelController.StartListeningIdle(listeningIdleAnim);
+                        listeningTriggerFired = false;
+                    }
+                    else if (IsListening(prevMode))
+                    {
+                        modelController.StopListeningIdle();
+                    }
+
+                    prevMode = aiAvatar.Mode;
+                }
+
+                // On first threshold crossing, play additive animation
+                if (!listeningTriggerFired
+                    && IsListening(aiAvatar.Mode)
+                    && microphoneManager != null)
+                {
+                    var currentDb = microphoneManager.CurrentVolumeDb;
+                    var thresholdDb = aiAvatar.VoiceRecognitionThresholdDB;
+
+                    if (currentDb > thresholdDb)
+                    {
+                        // Build trigger animation: keep base posture, overlay additive
+                        var triggerAnim = modelController.GetRegisteredAnimation(
+                            listeningIdleBaseName,
+                            listeningTriggerDuration,
+                            listeningTriggerAdditiveName,
+                            listeningTriggerAdditiveLayer
+                        );
+                        modelController.TriggerListeningAnimation(triggerAnim);
+                        listeningTriggerFired = true;
+                    }
+                }
+            }
         }
     }
 }
