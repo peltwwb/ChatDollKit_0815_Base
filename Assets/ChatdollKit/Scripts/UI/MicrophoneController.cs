@@ -6,9 +6,13 @@ namespace ChatdollKit.UI
 {
     public class MicrophoneController : MonoBehaviour
     {
+        // --- new_MicrophoneController.txt 追加: Inspector用ヘッダー ---
+        [Header("Dependencies")]
+        // --- ここまで ---
         [SerializeField]
         private MicrophoneManager microphoneManager;
 
+        [Header("UI – Sensitivity Slider")]
         [SerializeField]
         private Slider microphoneSlider;
         [SerializeField]
@@ -26,6 +30,14 @@ namespace ChatdollKit.UI
         private float volumeUpdateInterval = 0.33f;
         private float volumeUpdateTimer = 0.0f;
         private float previousVolume = -99.9f;
+
+        // --- new_MicrophoneController.txt 追加: CurrentVolumeDbプロパティ ---
+        /// <summary>
+        /// 最新のマイク音量 (dB, 0–100) を公開。NoiseMeter などが参照する。
+        /// </summary>
+        public float CurrentVolumeDb =>
+            microphoneManager != null ? microphoneManager.CurrentVolumeDb : -99.9f;
+        // --- ここまで ---
 
         private void Start()
         {
@@ -71,15 +83,28 @@ namespace ChatdollKit.UI
                 previousVolume = microphoneManager.CurrentVolumeDb;
             }
 
-            if (microphoneManager.CurrentVolumeDb > microphoneManager.NoiseGateThresholdDb)
-            {
-                sliderHandleImage.color = voiceDetectedColor;
-            }
-            else
-            {
-                sliderHandleImage.color = voiceNotDetectedColor;
-            }
+            // --- new_MicrophoneController.txt 追加: スライダーハンドル色変更のメソッド化 ---
+            UpdateSliderHandleColor();
+            // --- ここまで ---
+
+            // --- new_MicrophoneController.txt 追加: エディタ限定デバッグ出力 ---
+#if UNITY_EDITOR
+            Debug.Log($"CurrentVolumeDb = {microphoneManager.CurrentVolumeDb:F1} dB");
+#endif
+            // --- ここまで ---
         }
+
+        // --- new_MicrophoneController.txt 追加: スライダーハンドル色変更メソッド ---
+        private void UpdateSliderHandleColor()
+        {
+            if (microphoneManager == null) return;
+
+            sliderHandleImage.color =
+                microphoneManager.CurrentVolumeDb > microphoneManager.NoiseGateThresholdDb
+                    ? voiceDetectedColor
+                    : voiceNotDetectedColor;
+        }
+        // --- ここまで ---
 
         public void UpdateMicrophoneSensitivity()
         {

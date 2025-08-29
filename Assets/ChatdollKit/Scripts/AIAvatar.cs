@@ -3,6 +3,11 @@ using System.Collections.Generic;
 using System.Threading;
 using UnityEngine;
 using UnityEngine.Audio;
+// --- new_AIAvatar.txt 追加: UnityEditor参照 ---
+#if UNITY_EDITOR
+using UnityEditor;
+#endif
+// --- ここまで ---
 using Cysharp.Threading.Tasks;
 using ChatdollKit.Dialog;
 using ChatdollKit.LLM;
@@ -64,6 +69,7 @@ namespace ChatdollKit
         [Header("Conversation settings")]
         public List<WordWithAllowance> WakeWords;
         public List<string> CancelWords;
+        public List<string> ExitWords;
         public List<WordWithAllowance> InterruptWords;
         public List<string> IgnoreWords = new List<string>() { "。", "、", "？", "！" };
         public int WakeLength;
@@ -118,6 +124,10 @@ namespace ChatdollKit
         public Func<Dictionary<string, object>> GetPayloads { get; set; }
         public Func<string, UniTask> OnWakeAsync { get; set; }
         public List<ProcessingPresentation> ProcessingPresentations = new List<ProcessingPresentation>();
+
+        // --- new_AIAvatar.txt 追加: フィラー音声再生用 ---
+        private CancellationTokenSource fillerCts;
+        // --- ここまで ---
 
         private void Awake()
         {
@@ -323,6 +333,13 @@ namespace ChatdollKit
             {
                 characterAudioMixer = ModelController.AudioSource.outputAudioMixerGroup.audioMixer;
             }
+
+            // --- new_AIAvatar.txt 追加: フィラー音声再生用キャンセル ---
+            if (ModelController != null)
+            {
+                ModelController.CancelFillerAction = () => fillerCts?.Cancel();
+            }
+            // --- ここまで ---
         }
 
         private void Update()
@@ -552,6 +569,30 @@ namespace ChatdollKit
             return string.Empty;
         }
 
+        // --- new_AIAvatar.txt 追加: ExitWord抽出 ---
+        private string ExtractExitWord(string text)
+        {
+            var textLower = text.ToLower().Trim();
+            foreach (var iw in IgnoreWords)
+            {
+                textLower = textLower.Replace(iw.ToLower(), string.Empty);
+            }
+
+            if (ExitWords != null)
+            {
+                foreach (var ew in ExitWords)
+                {
+                    if (textLower == ew.ToLower())
+                    {
+                        return ew;
+                    }
+                }
+            }
+
+            return string.Empty;
+        }
+        // --- ここまで ---
+
         public void Chat(string text = null, Dictionary<string, object> payloads = null)
         {
             if (string.IsNullOrEmpty(text.Trim()))
@@ -631,6 +672,17 @@ namespace ChatdollKit
                 await StopChatAsync();
             }
 
+            // --- new_AIAvatar.txt 追加: ExitWord対応 ---
+            // Exit Word
+            else if (!string.IsNullOrEmpty(ExtractExitWord(text)))
+            {
+                Application.Quit();
+#if UNITY_EDITOR
+                UnityEditor.EditorApplication.isPlaying = false;
+#endif
+            }
+            // --- ここまで ---
+
             // Interupt Word
             else if (!string.IsNullOrEmpty(ExtractInterruptWord(text)))
             {
@@ -640,8 +692,22 @@ namespace ChatdollKit
             // Conversation request (Priority is higher than wake word)
             else if (Mode >= AvatarMode.Conversation)
             {
-                // Send text directly
-                _ = DialogProcessor.StartDialogAsync(text, payloads: GetPayloads?.Invoke());
+                // --- new_AIAvatar.txt 追加: フィラー音声再生 ---
+                fillerCts?.Cancel(); // 前回のフィラー再生を必ず止める
+                fillerCts = new CancellationTokenSource();
+
+                var dialogTask = DialogProcessor.StartDialogAsync(text, payloads: GetPayloads?.Invoke()).AttachExternalCancellation(fillerCts.Token);
+                var dialogTaskWithClip = dialogTask.ContinueWith(() => (AudioClip)null);
+
+                if (ModelController != null && ModelController.fillerVoicePlayer != null)
+                {
+                    await ModelController.fillerVoicePlayer.PlayWhileWaitingAsync(dialogTaskWithClip, fillerCts.Token);
+                }
+                else
+                {
+                    await dialogTask;
+                }
+                // --- ここまで ---
             }
 
             // Wake Word

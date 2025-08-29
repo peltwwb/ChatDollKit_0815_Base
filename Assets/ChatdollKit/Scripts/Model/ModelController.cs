@@ -6,6 +6,9 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using UnityEngine;
 using Cysharp.Threading.Tasks;
+// --- new_ModelController.txt 追加: FillerVoicePlayer用 ---
+using ChatdollKit.Filler;
+// --- ここまで ---
 
 namespace ChatdollKit.Model
 {
@@ -33,6 +36,13 @@ namespace ChatdollKit.Model
         private CancellationTokenSource voicePrefetchCancellationTokenSource;
         private ILipSyncHelper lipSyncHelper;
         public Action<float[]> HandlePlayingSamples;
+
+        // --- new_ModelController.txt 追加: FillerVoicePlayer関連 ---
+        [Header("Filler Voice")]
+        [SerializeField]
+        public FillerVoicePlayer fillerVoicePlayer;
+        public Action CancelFillerAction;
+        // --- ここまで ---
 
         // Animation
         [Header("Animation")]
@@ -83,6 +93,17 @@ namespace ChatdollKit.Model
 
             // Blinker
             blinker = gameObject.GetComponent<IBlink>();
+
+            // --- new_ModelController.txt 追加: FillerVoicePlayer自動セット ---
+            if (fillerVoicePlayer == null)
+            {
+                fillerVoicePlayer = GetComponent<FillerVoicePlayer>();
+                if (fillerVoicePlayer == null)
+                {
+                    fillerVoicePlayer = FindObjectOfType<FillerVoicePlayer>();
+                }
+            }
+            // --- ここまで ---
 
             if (AvatarModel == null)
             {
@@ -321,6 +342,21 @@ namespace ChatdollKit.Model
 
                 try
                 {
+                    // --- new_ModelController.txt 追加: フィラー音声キャンセル ---
+                    CancelFillerAction?.Invoke();
+                    // --- ここまで ---
+
+                    // --- new_ModelController.txt 追加: フィラー音声再生 ---
+                    if (fillerVoicePlayer != null)
+                    {
+                        fillerVoicePlayer.SetMainVoicePlaying(true);
+                        await fillerVoicePlayer.PlayWhileWaitingAsync(
+                            SpeechSynthesizerFunc(v.Text, v.TTSConfig?.Params ?? new Dictionary<string, object>(), token),
+                            token
+                        );
+                    }
+                    // --- ここまで ---
+
                     // Download voice from web or TTS service
                     var downloadStartTime = Time.time;
                     AudioClip clip = null;
@@ -429,6 +465,12 @@ namespace ChatdollKit.Model
 
                 finally
                 {
+                    // --- new_ModelController.txt 追加: フィラー音声再生終了通知 ---
+                    if (fillerVoicePlayer != null)
+                    {
+                        fillerVoicePlayer.SetMainVoicePlaying(false);
+                    }
+                    // --- ここまで ---
                     OnSayEnd?.Invoke();
                 }
             }
