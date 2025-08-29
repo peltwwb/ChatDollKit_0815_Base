@@ -6,9 +6,8 @@ namespace ChatdollKit.UI
 {
     public class MicrophoneController : MonoBehaviour
     {
-        // --- new_MicrophoneController.txt 追加: Inspector用ヘッダー ---
+        // 既存のフィールド
         [Header("Dependencies")]
-        // --- ここまで ---
         [SerializeField]
         private MicrophoneManager microphoneManager;
 
@@ -21,15 +20,6 @@ namespace ChatdollKit.UI
         private Color32 voiceDetectedColor = new Color32(0, 204, 0, 255);
         [SerializeField]
         private Color32 voiceNotDetectedColor = new Color32(255, 255, 255, 255);
-        [SerializeField]
-        private GameObject volumePanel;
-        [SerializeField]
-        private Text volumeText;
-
-        private float volumePanelHideTimer = 0.0f;
-        private float volumeUpdateInterval = 0.33f;
-        private float volumeUpdateTimer = 0.0f;
-        private float previousVolume = -99.9f;
 
         // --- new_MicrophoneController.txt 追加: CurrentVolumeDbプロパティ ---
         /// <summary>
@@ -41,56 +31,34 @@ namespace ChatdollKit.UI
 
         private void Start()
         {
+            // 既存の初期化処理
             if (microphoneManager == null)
             {
-                microphoneManager = FindFirstObjectByType<MicrophoneManager>();
+                microphoneManager = FindObjectOfType<MicrophoneManager>();
                 if (microphoneManager == null)
                 {
                     Debug.LogWarning("MicrophoneManager is not found in this scene.");
                 }
             }
 
-            microphoneSlider.value = -1 * microphoneManager.NoiseGateThresholdDb;
+            // --- 追加: スライダー初期値をNoiseGateThresholdDbに合わせる ---
+            if (microphoneSlider != null && microphoneManager != null)
+            {
+                microphoneSlider.value = -microphoneManager.NoiseGateThresholdDb;
+            }
+            // --- ここまで ---
         }
 
         private void LateUpdate()
         {
-            if (volumePanel.activeSelf)
-            {
-                volumePanelHideTimer += Time.deltaTime;
-                if (volumePanelHideTimer >= 5.0f)
-                {
-                    volumePanel.SetActive(false);
-                }
-            }
-
-            volumeUpdateTimer += Time.deltaTime;
-            if (volumeUpdateTimer >= volumeUpdateInterval)
-            {
-                if (microphoneManager.IsMuted)
-                {
-                    volumeText.text = $"Muted";
-                }
-                else
-                {
-                    var volumeToShow = microphoneManager.CurrentVolumeDb > -99.9f ? microphoneManager.CurrentVolumeDb : previousVolume;
-                    volumeText.text = $"{volumeToShow:f1} / {-1 * microphoneSlider.value:f1} db";
-                }
-                volumeUpdateTimer = 0.0f;
-            }
-            if (microphoneManager.CurrentVolumeDb > -99.9f)
-            {
-                previousVolume = microphoneManager.CurrentVolumeDb;
-            }
-
-            // --- new_MicrophoneController.txt 追加: スライダーハンドル色変更のメソッド化 ---
-            UpdateSliderHandleColor();
-            // --- ここまで ---
-
             // --- new_MicrophoneController.txt 追加: エディタ限定デバッグ出力 ---
 #if UNITY_EDITOR
             Debug.Log($"CurrentVolumeDb = {microphoneManager.CurrentVolumeDb:F1} dB");
 #endif
+            // --- ここまで ---
+
+            // --- new_MicrophoneController.txt 追加: スライダーハンドル色変更 ---
+            UpdateSliderHandleColor();
             // --- ここまで ---
         }
 
@@ -106,12 +74,15 @@ namespace ChatdollKit.UI
         }
         // --- ここまで ---
 
+        /// <summary>
+        /// Sensitivity スライダーの OnValueChanged から呼ばれる。
+        /// </summary>
         public void UpdateMicrophoneSensitivity()
         {
-            volumePanel.SetActive(true);
-            volumePanelHideTimer = 0.0f;
+            if (microphoneManager == null) return;
 
-            microphoneManager.SetNoiseGateThresholdDb(-1 * microphoneSlider.value);
+            microphoneManager.SetNoiseGateThresholdDb(-microphoneSlider.value);
+
             if (microphoneSlider.value == 0 && !microphoneManager.IsMuted)
             {
                 microphoneManager.MuteMicrophone(true);
