@@ -94,6 +94,52 @@ namespace ChatdollKit
         [SerializeField]
         [Tooltip("Duration for a single loop of listening base animation (seconds)")]
         private float listeningBaseDuration = 60f;
+
+        [Header("Listening Nod")]
+        [SerializeField]
+        [Tooltip("Enable nodding once when a valid utterance is recorded in Listening state")]
+        private bool enableListeningNodOnUtterance = true;
+        public enum ListeningNodTiming
+        {
+            OnVoiceStart,
+            OnVoiceEnd
+        }
+        [SerializeField]
+        [Tooltip("When to nod: at voice detection start or after utterance end")]
+        private ListeningNodTiming listeningNodTiming = ListeningNodTiming.OnVoiceStart;
+        [SerializeField]
+        [Tooltip("Additive animation state name used for the nod (Animator layer state)")]
+        private string listeningNodAdditiveName = "AGIA_Layer_nodding_once_01";
+        [SerializeField]
+        [Tooltip("Animator layer name for the additive nod animation")]
+        private string listeningNodAdditiveLayer = "Additive Layer";
+        [SerializeField]
+        [Tooltip("Duration of the base pose while overlaying the nod additive animation (seconds)")]
+        [Range(0.1f, 10f)]
+        private float listeningNodTriggerDuration = 2.0f;
+        [SerializeField]
+        [Tooltip("Delay after voice detection start to nod (sec) when timing is OnVoiceStart")]
+        [Range(0.0f, 2.0f)]
+        private float listeningNodStartDelaySec = 0.0f;
+        [SerializeField]
+        [Tooltip("Minimum total recording duration to accept an utterance for nod (sec)")]
+        [Range(0.05f, 5f)]
+        private float listeningNodRequiredRecordingDurationSec = 0.3f;
+        [SerializeField]
+        [Tooltip("Required duration the input stays above volume threshold during the recording (sec)")]
+        [Range(0.01f, 3f)]
+        private float listeningNodRequiredLoudDurationSec = 0.15f;
+        [SerializeField]
+        [Tooltip("Offset to mic noise-gate threshold used for loudness check (dB). 0 means same as recognition threshold.")]
+        private float listeningNodVolumeThresholdDbOffset = 0.0f;
+
+        // Internals for nod detection
+        private ChatdollKit.SpeechListener.MicrophoneManager micForReading; // optional scene mic for CurrentVolumeDb
+        private bool listeningPrevRecording = false;
+        private float listeningRecStartedAt = -1f;
+        private float listeningRecTotalAccum = 0f;
+        private bool listeningNodPending = false;
+        private bool listeningNodTriggeredForThisRec = false;
         private AudioMixer characterAudioMixer;
         [SerializeField]
         private string characterVolumeParameter = "CharacterVolume";
@@ -120,6 +166,13 @@ namespace ChatdollKit
             get { return isCharacterMuted; }
             set { MuteCharacter(value); }
         }
+
+        // Silero VAD via reflection (no hard assembly dependency)
+        private Component sileroVADComponent;
+        private System.Type sileroVADType;
+        private System.Reflection.MethodInfo sileroInitializeMethod;
+        private System.Reflection.MethodInfo sileroSetSourceSampleRateMethod;
+        private System.Reflection.MethodInfo sileroIsVoicedMethod;
 
         [Header("ChatdollKit components")]
         public ModelController ModelController;
@@ -174,6 +227,16 @@ namespace ChatdollKit
             LLMContentProcessor = LLMContentProcessor ?? gameObject.GetComponent<LLMContentProcessor>();
             SpeechListener = gameObject.GetComponent<ISpeechListener>();
 
+            // Resolve scene microphone manager (for CurrentVolumeDb and threshold)
+            if (MicrophoneManager is SpeechListener.MicrophoneManager mmSelf)
+            {
+                micForReading = mmSelf;
+            }
+            else
+            {
+                micForReading = FindFirstObjectByType<SpeechListener.MicrophoneManager>();
+            }
+
             // Setup MicrophoneManager
             MicrophoneManager.SetNoiseGateThresholdDb(VoiceRecognitionThresholdDB);
 
@@ -189,6 +252,28 @@ namespace ChatdollKit
                 }
                 // Keep auto-mute enabled by default to avoid picking up own TTS
                 mm.AutoMuteWhileAudioPlaying = true;
+            }
+
+            // Resolve Silero VAD (by name to avoid asmdef dependency)
+            sileroVADComponent = GetComponent("SileroVADProcessor") as Component;
+            if (sileroVADComponent == null)
+            {
+                // Search in scene
+                foreach (var c in FindObjectsOfType<Component>())
+                {
+                    if (c != null && c.GetType().Name == "SileroVADProcessor")
+                    {
+                        sileroVADComponent = c;
+                        break;
+                    }
+                }
+            }
+            if (sileroVADComponent != null)
+            {
+                sileroVADType = sileroVADComponent.GetType();
+                sileroInitializeMethod = sileroVADType.GetMethod("Initialize", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                sileroSetSourceSampleRateMethod = sileroVADType.GetMethod("SetSourceSampleRate", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                sileroIsVoicedMethod = sileroVADType.GetMethod("IsVoiced", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
             }
 
             // Setup ModelController
@@ -410,6 +495,37 @@ namespace ChatdollKit
                 maxRecordingDuration: idleMaxRecordingDuration
             );
 
+            // Plug Silero VAD into speech detection if available
+            if (SpeechListener is SpeechListenerBase slBase && sileroVADComponent != null && sileroIsVoicedMethod != null)
+            {
+                try
+                {
+                    if (sileroInitializeMethod != null)
+                    {
+                        sileroInitializeMethod.Invoke(sileroVADComponent, null);
+                    }
+                    if (micForReading != null && sileroSetSourceSampleRateMethod != null)
+                    {
+                        sileroSetSourceSampleRateMethod.Invoke(sileroVADComponent, new object[] { micForReading.SampleRate });
+                    }
+                }
+                catch { /* ignore */ }
+
+                // Build delegate that forwards to SileroVADProcessor.IsVoiced(samples, lin)
+                slBase.DetectVoiceFunctions = new List<Func<float[], float, bool>>()
+                {
+                    (samples, lin) =>
+                    {
+                        try
+                        {
+                            var res = sileroIsVoicedMethod.Invoke(sileroVADComponent, new object[] { samples, lin });
+                            return res is bool b && b;
+                        }
+                        catch { return false; }
+                    }
+                };
+            }
+
             // Setup SpeechSynthesizer
             foreach (var speechSynthesizer in gameObject.GetComponents<ISpeechSynthesizer>())
             {
@@ -515,6 +631,86 @@ namespace ChatdollKit
                 }
             }
 
+            // Listening nod trigger based on recorded utterance
+            if (enableListeningNodOnUtterance && Mode == AvatarMode.Listening && SpeechListener != null)
+            {
+                bool recNow = SpeechListener.IsRecording;
+                // Guard against nodding from own TTS
+                bool characterSpeakingNow = ModelController != null && ModelController.AudioSource != null && ModelController.AudioSource.isPlaying;
+
+                if (recNow)
+                {
+                    if (!listeningPrevRecording)
+                    {
+                        // Recording started
+                        listeningRecStartedAt = Time.time;
+                        listeningRecTotalAccum = 0f;
+                        listeningNodTriggeredForThisRec = false;
+                        // Prepare start-timing nod if configured
+                        listeningNodPending = (listeningNodTiming == ListeningNodTiming.OnVoiceStart);
+                    }
+
+                    // Accumulate durations while recording
+                    var dt = Time.deltaTime;
+                    listeningRecTotalAccum += dt;
+
+                    // If nod is pending for start timing, and delay has passed, fire once
+                    if (listeningNodPending
+                        && listeningNodTiming == ListeningNodTiming.OnVoiceStart
+                        && !characterSpeakingNow
+                        && (Time.time - listeningRecStartedAt) >= listeningNodStartDelaySec)
+                    {
+                        if (ModelController != null
+                            && !string.IsNullOrEmpty(listeningNodAdditiveName)
+                            && !string.IsNullOrEmpty(listeningNodAdditiveLayer))
+                        {
+                            var triggerAnim = new Model.Animation(
+                                listeningBaseParamKey,
+                                listeningBaseParamValue,
+                                listeningNodTriggerDuration,
+                                listeningNodAdditiveName,
+                                listeningNodAdditiveLayer
+                            );
+                            ModelController.TriggerListeningAnimation(triggerAnim);
+                            listeningNodPending = false;
+                            listeningNodTriggeredForThisRec = true;
+                        }
+                    }
+                }
+                else if (listeningPrevRecording)
+                {
+                    // Recording just ended: decide and possibly nod
+                    var total = listeningRecTotalAccum;
+
+                    // Reset accumulators for next turn
+                    listeningRecStartedAt = -1f;
+                    listeningRecTotalAccum = 0f;
+
+                    // Conditions: within Listening, not currently speaking, recorded long enough and loud long enough
+                    if (listeningNodTiming == ListeningNodTiming.OnVoiceEnd
+                        && !listeningNodTriggeredForThisRec
+                        && !characterSpeakingNow
+                        && total >= listeningNodRequiredRecordingDurationSec
+                        && ModelController != null
+                        && !string.IsNullOrEmpty(listeningNodAdditiveName)
+                        && !string.IsNullOrEmpty(listeningNodAdditiveLayer))
+                    {
+                        var triggerAnim = new Model.Animation(
+                            listeningBaseParamKey,
+                            listeningBaseParamValue,
+                            listeningNodTriggerDuration,
+                            listeningNodAdditiveName,
+                            listeningNodAdditiveLayer
+                        );
+                        ModelController.TriggerListeningAnimation(triggerAnim);
+                        listeningNodTriggeredForThisRec = true;
+                    }
+                    listeningNodPending = false;
+                }
+
+                listeningPrevRecording = recNow;
+            }
+
             // Speech listener config
             if (Mode != previousMode)
             {
@@ -528,6 +724,13 @@ namespace ChatdollKit
                     listeningSilentStartedAt = -1f;
                     listeningEnteredAt = Time.time;
                     ModelController?.SetFace(new List<FaceExpression>() { new FaceExpression("Neutral", 0.0f, string.Empty) });
+
+                    // Reset nod detection accumulators per listening session
+                    listeningPrevRecording = SpeechListener != null && SpeechListener.IsRecording;
+                    listeningRecStartedAt = -1f;
+                    listeningRecTotalAccum = 0f;
+                    listeningNodPending = false;
+                    listeningNodTriggeredForThisRec = false;
                 }
                 // Start/Stop listening base pose
                 if (Mode == AvatarMode.Listening)
@@ -934,6 +1137,23 @@ namespace ChatdollKit
             SpeechListener.StopListening();
             SpeechListener = speechListener;
             SpeechListener.OnRecognized = OnSpeechListenerRecognized;
+
+            // Rewire VAD detection to new listener if possible
+            if (SpeechListener is SpeechListenerBase slBase && sileroVADComponent != null && sileroIsVoicedMethod != null)
+            {
+                slBase.DetectVoiceFunctions = new List<Func<float[], float, bool>>()
+                {
+                    (samples, lin) =>
+                    {
+                        try
+                        {
+                            var res = sileroIsVoicedMethod.Invoke(sileroVADComponent, new object[] { samples, lin });
+                            return res is bool b && b;
+                        }
+                        catch { return false; }
+                    }
+                };
+            }
         }
 
         public class ProcessingPresentation
