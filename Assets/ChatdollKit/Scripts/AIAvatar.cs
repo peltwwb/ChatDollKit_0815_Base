@@ -161,6 +161,20 @@ namespace ChatdollKit
             // Setup MicrophoneManager
             MicrophoneManager.SetNoiseGateThresholdDb(VoiceRecognitionThresholdDB);
 
+            // Ensure self-capture protection: route the avatar's AudioSource to the mic manager
+            // so it can auto-mute mic while the character is speaking.
+            if (MicrophoneManager is SpeechListener.MicrophoneManager mm)
+            {
+                if (mm.OutputAudioSource == null)
+                {
+                    mm.OutputAudioSource = (ModelController != null && ModelController.AudioSource != null)
+                        ? ModelController.AudioSource
+                        : GetComponent<AudioSource>();
+                }
+                // Keep auto-mute enabled by default to avoid picking up own TTS
+                mm.AutoMuteWhileAudioPlaying = true;
+            }
+
             // Setup ModelController
             ModelController.OnSayStart = async (voice, token) =>
             {

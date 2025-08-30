@@ -37,6 +37,15 @@ namespace ChatdollKit.Model
         private ILipSyncHelper lipSyncHelper;
         public Action<float[]> HandlePlayingSamples;
 
+        // Prevent self-capture: mute mic while speaking
+        [Header("Mic Gating")]
+        [SerializeField]
+        private bool MuteMicWhileSpeaking = true;
+        private ChatdollKit.SpeechListener.MicrophoneManager micManager;
+        #if UNITY_WEBGL && !UNITY_EDITOR
+        private ChatdollKit.Extension.SileroVAD.SileroVADProcessor sileroVAD;
+        #endif
+
         // --- new_ModelController.txt 追加: FillerVoicePlayer関連 ---
         [Header("Filler Voice")]
         [SerializeField]
@@ -113,6 +122,12 @@ namespace ChatdollKit.Model
             {
                 ActivateAvatar();
             }
+
+            // Cache microphone manager if attached on the same object
+            micManager = gameObject.GetComponent<ChatdollKit.SpeechListener.MicrophoneManager>();
+            #if UNITY_WEBGL && !UNITY_EDITOR
+            sileroVAD = gameObject.GetComponent<ChatdollKit.Extension.SileroVAD.SileroVADProcessor>();
+            #endif
         }
 
         private void Start()
@@ -332,147 +347,181 @@ namespace ChatdollKit.Model
 
             // Speak sequentially
             isSpeaking = true;
-            foreach (var v in voices)
+
+            // Optional: Mute microphone while speaking to avoid capturing own voice
+            var shouldGateMic = MuteMicWhileSpeaking && micManager != null;
+            if (shouldGateMic)
             {
-                if (token.IsCancellationRequested)
+                micManager.MuteMicrophone(true);
+                #if UNITY_WEBGL && !UNITY_EDITOR
+                if (sileroVAD != null)
                 {
-                    return;
+                    sileroVAD.Mute(true);
                 }
-
-                OnSayStart?.Invoke(v, token);
-
-                try
+                #endif
+            }
+            try
+            {
+                foreach (var v in voices)
                 {
-                    // --- new_ModelController.txt 追加: フィラー音声キャンセル ---
-                    CancelFillerAction?.Invoke();
-                    // --- ここまで ---
-
-                    // --- new_ModelController.txt 追加: フィラー音声再生 ---
-                    if (fillerVoicePlayer != null)
+                    if (token.IsCancellationRequested)
                     {
-                        fillerVoicePlayer.SetMainVoicePlaying(true);
-                        await fillerVoicePlayer.PlayWhileWaitingAsync(
-                            SpeechSynthesizerFunc(v.Text, v.TTSConfig?.Params ?? new Dictionary<string, object>(), token),
-                            token
-                        );
+                        return;
                     }
-                    // --- ここまで ---
 
-                    // Download voice from web or TTS service
-                    var downloadStartTime = Time.time;
-                    AudioClip clip = null;
+                    OnSayStart?.Invoke(v, token);
 
-                    var parameters = v.TTSConfig != null ? v.TTSConfig.Params : new Dictionary<string, object>();
-                    clip = await SpeechSynthesizerFunc(v.Text, parameters, token);
-
-                    if (clip != null)
+                    try
                     {
-                        // Wait for PreGap remains after download
-                        var preGap = v.PreGap - (Time.time - downloadStartTime);
-                        if (preGap > 0)
+                        // --- new_ModelController.txt 追加: フィラー音声キャンセル ---
+                        CancelFillerAction?.Invoke();
+                        // --- ここまで ---
+
+                        // --- new_ModelController.txt 追加: フィラー音声再生 ---
+                        if (fillerVoicePlayer != null)
                         {
-                            if (!token.IsCancellationRequested)
+                            fillerVoicePlayer.SetMainVoicePlaying(true);
+                            await fillerVoicePlayer.PlayWhileWaitingAsync(
+                                SpeechSynthesizerFunc(v.Text, v.TTSConfig?.Params ?? new Dictionary<string, object>(), token),
+                                token
+                            );
+                        }
+                        // --- ここまで ---
+
+                        // Download voice from web or TTS service
+                        var downloadStartTime = Time.time;
+                        AudioClip clip = null;
+
+                        var parameters = v.TTSConfig != null ? v.TTSConfig.Params : new Dictionary<string, object>();
+                        clip = await SpeechSynthesizerFunc(v.Text, parameters, token);
+
+                        if (clip != null)
+                        {
+                            // Wait for PreGap remains after download
+                            var preGap = v.PreGap - (Time.time - downloadStartTime);
+                            if (preGap > 0)
                             {
-                                try
+                                if (!token.IsCancellationRequested)
                                 {
-                                    await UniTask.Delay((int)(preGap * 1000), cancellationToken: token);
-                                }
-                                catch (OperationCanceledException)
-                                {
-                                    // OperationCanceledException raises
-                                    Debug.Log("Task canceled in waiting PreGap");
+                                    try
+                                    {
+                                        await UniTask.Delay((int)(preGap * 1000), cancellationToken: token);
+                                    }
+                                    catch (OperationCanceledException)
+                                    {
+                                        // OperationCanceledException raises
+                                        Debug.Log("Task canceled in waiting PreGap");
+                                    }
                                 }
                             }
-                        }
-                        History?.Add(v);
+                            History?.Add(v);
 
-                        if (HandlePlayingSamples != null)
-                        {
-                            // Wait while voice playing with processing LipSync
-                            var startTime = Time.realtimeSinceStartup;
-                            var bufferSize = clip.channels == 2 ? 2048 : 1024;  // Optimized for 44100Hz / 30FPS
-                            var sampleBuffer = new float[bufferSize];
-                            var nextPosition = 0;
-                            var samples = new float[clip.samples * clip.channels];
-
-                            if (!clip.GetData(samples, 0))
+                            if (HandlePlayingSamples != null)
                             {
-                                Debug.LogWarning("Failed to get audio data from clip");
+                                // Wait while voice playing with processing LipSync
+                                var startTime = Time.realtimeSinceStartup;
+                                var bufferSize = clip.channels == 2 ? 2048 : 1024;  // Optimized for 44100Hz / 30FPS
+                                var sampleBuffer = new float[bufferSize];
+                                var nextPosition = 0;
+                                var samples = new float[clip.samples * clip.channels];
+
+                                if (!clip.GetData(samples, 0))
+                                {
+                                    Debug.LogWarning("Failed to get audio data from clip");
+                                }
+                                else
+                                {
+                                    // Play audio
+                                    AudioSource.PlayOneShot(clip);
+
+                                    // Process samples by estimating current playing position by time
+                                    while (Time.realtimeSinceStartup - startTime < clip.length && !token.IsCancellationRequested)
+                                    {
+                                        var elapsedTime = Time.realtimeSinceStartup - startTime;
+                                        var currentPosition = Mathf.FloorToInt(elapsedTime * clip.frequency) * clip.channels;
+
+                                        while (nextPosition + bufferSize <= currentPosition &&
+                                            nextPosition + bufferSize <= samples.Length)
+                                        {
+                                            System.Array.Copy(samples, nextPosition, sampleBuffer, 0, bufferSize);
+                                            HandlePlayingSamples(sampleBuffer);
+                                            nextPosition += bufferSize;
+                                        }
+
+                                        await UniTask.Delay(33, cancellationToken: token);  // 30FPS
+                                    }
+
+                                    // Remaining samples
+                                    if (nextPosition < samples.Length)
+                                    {
+                                        var remaining = samples.Length - nextPosition;
+                                        var lastBuffer = new float[remaining];
+                                        System.Array.Copy(samples, nextPosition, lastBuffer, 0, remaining);
+                                        HandlePlayingSamples(lastBuffer);
+                                    }
+                                }
                             }
                             else
                             {
                                 // Play audio
                                 AudioSource.PlayOneShot(clip);
 
-                                // Process samples by estimating current playing position by time
-                                while (Time.realtimeSinceStartup - startTime < clip.length && !token.IsCancellationRequested)
+                                // Wait while voice playing
+                                while (AudioSource.isPlaying && !token.IsCancellationRequested)
                                 {
-                                    var elapsedTime = Time.realtimeSinceStartup - startTime;
-                                    var currentPosition = Mathf.FloorToInt(elapsedTime * clip.frequency) * clip.channels;
-
-                                    while (nextPosition + bufferSize <= currentPosition &&
-                                        nextPosition + bufferSize <= samples.Length)
-                                    {
-                                        System.Array.Copy(samples, nextPosition, sampleBuffer, 0, bufferSize);
-                                        HandlePlayingSamples(sampleBuffer);
-                                        nextPosition += bufferSize;
-                                    }
-
                                     await UniTask.Delay(33, cancellationToken: token);  // 30FPS
                                 }
+                            }
 
-                                // Remaining samples
-                                if (nextPosition < samples.Length)
+                            if (!token.IsCancellationRequested)
+                            {
+                                try
                                 {
-                                    var remaining = samples.Length - nextPosition;
-                                    var lastBuffer = new float[remaining];
-                                    System.Array.Copy(samples, nextPosition, lastBuffer, 0, remaining);
-                                    HandlePlayingSamples(lastBuffer);
+                                    // Wait for PostGap
+                                    await UniTask.Delay((int)(v.PostGap * 1000), cancellationToken: token);
+                                }
+                                catch (OperationCanceledException)
+                                {
+                                    Debug.Log("Task canceled in waiting PostGap");
                                 }
                             }
-                        }
-                        else
-                        {
-                            // Play audio
-                            AudioSource.PlayOneShot(clip);
 
-                            // Wait while voice playing
-                            while (AudioSource.isPlaying && !token.IsCancellationRequested)
-                            {
-                                await UniTask.Delay(33, cancellationToken: token);  // 30FPS
-                            }
                         }
-
-                        if (!token.IsCancellationRequested)
-                        {
-                            try
-                            {
-                                // Wait for PostGap
-                                await UniTask.Delay((int)(v.PostGap * 1000), cancellationToken: token);
-                            }
-                            catch (OperationCanceledException)
-                            {
-                                Debug.Log("Task canceled in waiting PostGap");
-                            }
-                        }
-
                     }
-                }
-
-                catch (Exception ex)
-                {
-                    Debug.LogError($"Error at Say: {ex.Message}\n{ex.StackTrace}");
-                }
-
-                finally
-                {
-                    // --- new_ModelController.txt 追加: フィラー音声再生終了通知 ---
-                    if (fillerVoicePlayer != null)
+                    // --- ここから修正 ---
+                    catch (OperationCanceledException)
                     {
-                        fillerVoicePlayer.SetMainVoicePlaying(false);
+                        // キャンセルは正常なので何もしない
+                        return;
                     }
-                    // --- ここまで ---
-                    OnSayEnd?.Invoke();
+                    catch (Exception ex)
+                    {
+                        Debug.LogError($"Error at Say: {ex.Message}\n{ex.StackTrace}");
+                    }
+                    // --- ここまで修正 ---
+                    finally
+                    {
+                        // --- new_ModelController.txt 追加: フィラー音声再生終了通知 ---
+                        if (fillerVoicePlayer != null)
+                        {
+                            fillerVoicePlayer.SetMainVoicePlaying(false);
+                        }
+                        // --- ここまで ---
+                        OnSayEnd?.Invoke();
+                    }
+                }
+            }
+            finally
+            {
+                if (shouldGateMic)
+                {
+                    micManager.MuteMicrophone(false);
+#if UNITY_WEBGL && !UNITY_EDITOR
+                    if (sileroVAD != null)
+                    {
+                        sileroVAD.Mute(false);
+                    }
+#endif
                 }
             }
 

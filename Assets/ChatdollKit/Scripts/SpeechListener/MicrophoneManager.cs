@@ -37,13 +37,21 @@ namespace ChatdollKit.SpeechListener
         private Queue<float[]> webGLSamplesBuffer = new Queue<float[]>();
 #endif
         public string MicrophoneDevice;
-        public int SampleRate = 44100;
+        public int SampleRate = 16000;
         public float NoiseGateThresholdDb = -50.0f;
         public bool AutoStart = true;
         public bool IsDebug = false;
         public IMicrophoneProvider MicrophoneProvider { get; set; }
         [SerializeField]
         private bool useMallocInWebGL = true;
+        [Tooltip("Mix multi-channel microphone input to mono by averaging channels (non-WebGL).")]
+        public bool MixToMono = true;
+
+        [Header("Self-capture Protection")]
+        [Tooltip("When enabled, ignores mic input while the output AudioSource is playing (prevents capturing own TTS).")]
+        public bool AutoMuteWhileAudioPlaying = true;
+        [Tooltip("AudioSource that plays the avatar's speech. If null, tries to GetComponent<AudioSource>().")]
+        public AudioSource OutputAudioSource;
 
         // Expose on inspector for debugging
         public bool IsRecording;
@@ -70,6 +78,10 @@ namespace ChatdollKit.SpeechListener
                 Debug.LogWarning("Set `useMallocInWebGL = true` to improve performance.");
             }
 #endif
+            if (OutputAudioSource == null)
+            {
+                OutputAudioSource = GetComponent<AudioSource>();
+            }
             UpdateLinearVolumes();
             if (AutoStart)
             {
@@ -176,7 +188,7 @@ namespace ChatdollKit.SpeechListener
         {
             var buffer = webGLSamplesBuffer.Count > 0 ? webGLSamplesBuffer.Dequeue() : new float[0];
 
-            if (IsMuted || IsWebGLMicrophoneRecording() == 0)
+            if (IsMuted || IsWebGLMicrophoneRecording() == 0 || IsOutputAudioPlaying())
             {
                 return new float[0];
             }
@@ -236,7 +248,7 @@ namespace ChatdollKit.SpeechListener
         {
             CurrentSamples = 0;
 
-            if (IsMuted || microphoneClip == null)
+            if (IsMuted || microphoneClip == null || IsOutputAudioPlaying())
             {
                 return new float[0];
             }
@@ -259,7 +271,8 @@ namespace ChatdollKit.SpeechListener
                 return new float[0];
             }
 
-            var samples = new float[sampleLength * microphoneClip.channels];
+            var channels = microphoneClip.channels;
+            var samples = new float[sampleLength * channels];
 
             try
             {
@@ -294,6 +307,22 @@ namespace ChatdollKit.SpeechListener
             }
 
             lastSamplePosition = currentPosition;
+
+            // Downmix to mono if requested and input is multi-channel
+            if (MixToMono && channels > 1)
+            {
+                var mono = new float[sampleLength];
+                for (int i = 0, f = 0; f < sampleLength; f++)
+                {
+                    float sum = 0f;
+                    for (int c = 0; c < channels; c++, i++)
+                    {
+                        sum += samples[i];
+                    }
+                    mono[f] = sum / channels;
+                }
+                return mono;
+            }
 
             return samples;
         }
@@ -332,6 +361,11 @@ namespace ChatdollKit.SpeechListener
             }
 
             return db;
+        }
+
+        private bool IsOutputAudioPlaying()
+        {
+            return AutoMuteWhileAudioPlaying && OutputAudioSource != null && OutputAudioSource.isPlaying;
         }
     }
 }

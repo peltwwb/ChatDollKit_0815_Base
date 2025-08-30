@@ -34,6 +34,14 @@ namespace ChatdollKit.SpeechListener
         private RecordingSession session;
         private CancellationTokenSource cancellationTokenSource;
 
+        [Header("Segmentation")]
+        [Tooltip("If true, long utterances are split into chunks around MaxRecordingDuration. If false, a single long clip is emitted per turn.")]
+        public bool SegmentLongRecordings = false;
+        [Tooltip("Overlap duration between segments when segmentation is enabled.")]
+        public float SegmentOverlap = 0.1f;
+        [Tooltip("Minimum duration (sec) to emit a segmented chunk. Used when segmentation is enabled.")]
+        public float MinSegmentDuration = 0.3f;
+
         protected virtual void Start()
         {
             microphoneManager = gameObject.GetComponent<MicrophoneManager>();
@@ -72,8 +80,14 @@ namespace ChatdollKit.SpeechListener
                 maxRecordingDuration: MaxRecordingDuration,
                 maxPrerollSamples: maxPrerollSamples,
                 onRecordingComplete: async (samples) => await HandleRecordingCompleteAsync(samples, cancellationTokenSource.Token),
-                detectVoiceFunctions: DetectVoiceFunctions ?? new() { IsVoiceDetectedByVolume }
+                detectVoiceFunctions: DetectVoiceFunctions ?? new() { IsVoiceDetectedByVolume },
+                sampleRate: microphoneManager.SampleRate
             );
+
+            // Configure segmentation behavior
+            session.EnableMaxDurationSegmentation = SegmentLongRecordings;
+            session.SegmentOverlapDuration = SegmentOverlap;
+            session.MinSegmentDuration = MinSegmentDuration;
 
             microphoneManager.StartRecordingSession(session);
         }
@@ -105,7 +119,13 @@ namespace ChatdollKit.SpeechListener
             if (silenceDurationThreshold > float.MinValue) SilenceDurationThreshold = silenceDurationThreshold;
             if (minRecordingDuration > float.MinValue) MinRecordingDuration = minRecordingDuration;
             if (maxRecordingDuration > float.MinValue) MaxRecordingDuration = maxRecordingDuration;
-            StartListening(true);
+            // Only restart listening when the session has actually ended
+            // (e.g., stopped by silence). When segmentation is enabled,
+            // OnRecordingComplete can be invoked while still recording.
+            if (session == null || !session.IsRecording)
+            {
+                StartListening(true);
+            }
         }
 
         private float[] Resample(float[] samples, int originalRate, int targetRate)
