@@ -26,7 +26,7 @@ namespace ChatdollKit.Demo
         [Range(1f, 300f)]
         private float listeningIdleDuration = 60f;
         [SerializeField]
-        private string listeningTriggerAdditiveName = "AGIA_Layer_nodding_once_01";
+        private string listeningTriggerAdditiveName = "AGIA_Layer_nod_once_01";
         [SerializeField]
         private string listeningTriggerAdditiveLayer = "Additive Layer";
         [SerializeField]
@@ -102,7 +102,7 @@ namespace ChatdollKit.Demo
             //modelController.AddIdleAnimation("udekumi_purapura", 12.0f, weight: 3);
             //modelController.AddIdleAnimation("udekumi_yurayura", 11.0f, weight: 3);
             modelController.AddIdleAnimation("ryote_nobashi", 10.0f, weight: 1);
-            modelController.AddIdleAnimation("kami_totonoe", 9.0f, weight: 1);
+            modelController.AddIdleAnimation("kami_totonoe", 10.0f, weight: 1);
 
             // Optional: provide a separate idling pool for 'listening' mode
             // Use configured duration to keep a stable stand pose
@@ -120,7 +120,7 @@ namespace ChatdollKit.Demo
             //processingAnimation.Add(modelController.GetRegisteredAnimation("concern_right_hand_front", 0.3f));
             processingAnimation.Add(modelController.GetRegisteredAnimation("concern_right_hand_front", 20.0f, "AGIA_Layer_nodding_once_01", "Additive Layer"));
             var processingFace = new List<FaceExpression>();
-            processingFace.Add(new FaceExpression("Blink", 3.0f));
+            //processingFace.Add(new FaceExpression("Blink", 3.0f));
             gameObject.GetComponent<AIAvatar>().AddProcessingPresentaion(processingAnimation, processingFace);
 
             // Animation and face expression for start up

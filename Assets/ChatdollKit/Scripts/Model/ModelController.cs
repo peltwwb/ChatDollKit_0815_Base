@@ -579,6 +579,12 @@ namespace ChatdollKit.Model
             History?.Add("Stop speech");
             AudioSource.Stop();
         }
+
+        // Reset viseme (mouth) to neutral immediately
+        public void ResetViseme()
+        {
+            lipSyncHelper?.ResetViseme();
+        }
 #endregion
 
 

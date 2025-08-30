@@ -129,6 +129,22 @@ namespace ChatdollKit
         public ISpeechListener SpeechListener;
         public MessageWindowBase UserMessageWindow;
         public MessageWindowBase CharacterMessageWindow;
+        
+        // Exposed: whether currently in Listening mode and judged silent
+        public bool IsListeningSilent { get; private set; } = false;
+        [Header("Listening Silent Blink")]
+        [SerializeField]
+        private string listeningSilentBlinkFaceName = "Blink";
+        [SerializeField]
+        private float listeningSilentBlinkOnsetDelay = 0.7f; // seconds of continuous silence before closing eyes
+        [SerializeField]
+        private float listeningSilentBlinkMaxDuration = 1.5f; // maximum eyes-closed duration per silent segment
+        [SerializeField]
+        private float listeningSilentInitialNoBlinkWindow = 5.0f; // do not Blink in first N sec after entering Listening
+        private bool appliedListeningBlink = false;
+        private bool detectedVoiceSinceListeningStart = false;
+        private float listeningSilentStartedAt = -1f;
+        private float listeningEnteredAt = -100f;
  
         [Header("Error")]
         [SerializeField]
@@ -423,6 +439,61 @@ namespace ChatdollKit
             UpdateMode();
             UpdateCharacterVolume();
 
+            // Listening + Silent indicator via Blink face
+            // Use SpeechListenerBase to read voice activity; fall back to false when unavailable
+            bool nowSilent = false;
+            bool voiceDetectedNow = false;
+            if (SpeechListener is SpeechListenerBase slBase)
+            {
+                voiceDetectedNow = slBase.IsVoiceDetected;
+                nowSilent = !voiceDetectedNow;
+            }
+            // Avoid applying listening blink while character is speaking
+            bool characterSpeaking = ModelController != null && ModelController.AudioSource != null && ModelController.AudioSource.isPlaying;
+            // Only start using Blink after the first voice detection since entering Listening
+            if (Mode == AvatarMode.Listening && voiceDetectedNow)
+            {
+                detectedVoiceSinceListeningStart = true;
+            }
+            bool withinInitialNoBlink = (Mode == AvatarMode.Listening) && (Time.time - listeningEnteredAt < listeningSilentInitialNoBlinkWindow);
+            IsListeningSilent = (Mode == AvatarMode.Listening) && nowSilent && !characterSpeaking && detectedVoiceSinceListeningStart && !withinInitialNoBlink;
+
+            // Manage persistent Blink with onset delay
+            if (IsListeningSilent)
+            {
+                if (listeningSilentStartedAt < 0f)
+                {
+                    listeningSilentStartedAt = Time.time; // start timing continuous silence
+                }
+                if (!appliedListeningBlink && (Time.time - listeningSilentStartedAt) >= listeningSilentBlinkOnsetDelay)
+                {
+                    // Apply Blink (close eyes) for up to MaxDuration, then return to Neutral automatically
+                    ModelController?.SetFace(new List<FaceExpression>()
+                    {
+                        new FaceExpression(listeningSilentBlinkFaceName, listeningSilentBlinkMaxDuration),
+                        new FaceExpression("Neutral", 0.0f, string.Empty)
+                    });
+                    // Also reset viseme to prevent mouth movement while eyes are closed
+                    ModelController?.ResetViseme();
+                    appliedListeningBlink = true;
+                }
+                else if (appliedListeningBlink)
+                {
+                    // Keep resetting viseme during the closed-eyes window to suppress mouth twitch
+                    ModelController?.ResetViseme();
+                }
+            }
+            else
+            {
+                listeningSilentStartedAt = -1f;
+                if (appliedListeningBlink)
+                {
+                    // Open eyes when leaving silence or other conditions break the silent state
+                    ModelController?.SetFace(new List<FaceExpression>() { new FaceExpression("Neutral", 0.0f, string.Empty) });
+                    appliedListeningBlink = false;
+                }
+            }
+
             // User message window (Listening... previous style)
             if (DialogProcessor.Status == DialogProcessor.DialogStatus.Idling)
             {
@@ -447,6 +518,17 @@ namespace ChatdollKit
             // Speech listener config
             if (Mode != previousMode)
             {
+                // Reset Blink gating when entering Listening
+                if (Mode == AvatarMode.Listening)
+                {
+                    // Start each Listening with eyes open (no Blink)
+                    detectedVoiceSinceListeningStart = false;
+                    appliedListeningBlink = false;
+                    IsListeningSilent = false;
+                    listeningSilentStartedAt = -1f;
+                    listeningEnteredAt = Time.time;
+                    ModelController?.SetFace(new List<FaceExpression>() { new FaceExpression("Neutral", 0.0f, string.Empty) });
+                }
                 // Start/Stop listening base pose
                 if (Mode == AvatarMode.Listening)
                 {
@@ -772,15 +854,29 @@ namespace ChatdollKit
         {
             if (string.IsNullOrEmpty(text) || Mode == AvatarMode.Disabled) return;
 
+            // Detect speaking state of the character (avoid echo loops)
+            bool characterSpeaking = ModelController != null && ModelController.AudioSource != null && ModelController.AudioSource.isPlaying;
+
+            // Pre-extract control words once
+            var cancelWord = ExtractCancelWord(text);
+            var exitWord = ExtractExitWord(text);
+            var interruptWord = ExtractInterruptWord(text);
+
+            // If the character is currently speaking, ignore non-control utterances to avoid feedback loops
+            if (characterSpeaking && string.IsNullOrEmpty(cancelWord) && string.IsNullOrEmpty(exitWord) && string.IsNullOrEmpty(interruptWord))
+            {
+                return;
+            }
+
             // Cancel Word
-            else if (!string.IsNullOrEmpty(ExtractCancelWord(text)))
+            if (!string.IsNullOrEmpty(cancelWord))
             {
                 await StopChatAsync();
             }
 
             // --- new_AIAvatar.txt 追加: ExitWord対応 ---
             // Exit Word
-            else if (!string.IsNullOrEmpty(ExtractExitWord(text)))
+            else if (!string.IsNullOrEmpty(exitWord))
             {
                 Application.Quit();
 #if UNITY_EDITOR
@@ -790,7 +886,7 @@ namespace ChatdollKit
             // --- ここまで ---
 
             // Interupt Word
-            else if (!string.IsNullOrEmpty(ExtractInterruptWord(text)))
+            else if (!string.IsNullOrEmpty(interruptWord))
             {
                 await StopChatAsync(continueDialog: true);
             }

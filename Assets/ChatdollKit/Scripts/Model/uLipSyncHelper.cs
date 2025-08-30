@@ -9,7 +9,26 @@ namespace ChatdollKit.Model
     {
         public void ResetViseme()
         {
-            // do nothing
+            try
+            {
+                var mc = gameObject.GetComponent<ModelController>();
+                var avatar = mc != null ? mc.AvatarModel : null;
+                if (avatar == null) return;
+
+                var smr = AvatarUtility.GetFacialSkinnedMeshRenderer(avatar);
+                if (smr == null || smr.sharedMesh == null) return;
+
+                // Zero out common viseme blendshapes (A, I, U, E, O)
+                var map = GetBlendShapeMap(avatar);
+                foreach (var kv in map)
+                {
+                    if (kv.Value >= 0)
+                    {
+                        smr.SetBlendShapeWeight(kv.Value, 0f);
+                    }
+                }
+            }
+            catch { }
         }
 
         public virtual void ConfigureViseme(GameObject avatarObject)
