@@ -592,7 +592,6 @@ namespace ChatdollKit.Model
         // Set animations to queue
         public void Animate(List<Animation> animations)
         {
-            ResetLayers();
             animationQueue.Clear();
             animationQueue = new List<Animation>(animations);
             animationStartAt = 0;
@@ -633,19 +632,30 @@ namespace ChatdollKit.Model
                 return;
             }
 
-            if (currentAnimation == null || animationToRun.Id != currentAnimation.Id)
+            // Start or switch animation only when the actual content differs
+            if (currentAnimation == null || !AreAnimationsEquivalent(animationToRun, currentAnimation))
             {
-                // Start new animation
-                ResetLayers();
-                animator.SetInteger(animationToRun.ParameterKey, animationToRun.ParameterValue);
-                // Avoid unnecessary layer resets that can cause visible snaps.
-                // Only reset when leaving/entering a state that uses layered additive animation.
+                // Start new (or different) animation
+                // Avoid unnecessary global layer resets that can cause visible snaps.
+                // Reset only the specific layer when needed.
+
                 var prevHadLayer = currentAnimation != null && !string.IsNullOrEmpty(currentAnimation.LayeredAnimationName);
                 var nextHasLayer = !string.IsNullOrEmpty(animationToRun.LayeredAnimationName);
-                if (prevHadLayer || nextHasLayer)
+                if (prevHadLayer && !nextHasLayer)
                 {
-                    ResetLayers();
+                    // Previously had additive, now none -> reset that layer to default
+                    ResetLayerByName(currentAnimation.LayeredAnimationLayerName);
                 }
+                else if (prevHadLayer && nextHasLayer)
+                {
+                    // Switching additive layers. If layer differs, reset previous layer only.
+                    if (currentAnimation.LayeredAnimationLayerName != animationToRun.LayeredAnimationLayerName)
+                    {
+                        ResetLayerByName(currentAnimation.LayeredAnimationLayerName);
+                    }
+                    // If same layer but different state, we will crossfade below without reset.
+                }
+                // If coming from no additive and going to additive, no reset is needed.
 
                 // Write base parameter only if it actually changes to prevent redundant transitions
                 if (currentAnimation == null
@@ -663,6 +673,29 @@ namespace ChatdollKit.Model
                 animationStartAt = Time.realtimeSinceStartup;
             }
         }
+
+        // Reset only specified layer to default state to minimize visual snapping
+        private void ResetLayerByName(string layerName)
+        {
+            if (string.IsNullOrEmpty(layerName) || animator == null) return;
+            var index = animator.GetLayerIndex(layerName);
+            if (index >= 0)
+            {
+                animator.CrossFadeInFixedTime(layeredAnimationDefaultState, AnimationFadeLength, index);
+            }
+        }
+
+        // Compare animations by their actual content (not by GUID Id)
+        private bool AreAnimationsEquivalent(Animation a, Animation b)
+        {
+            if (a == null || b == null) return false;
+            if (a.ParameterKey != b.ParameterKey) return false;
+            if (a.ParameterValue != b.ParameterValue) return false;
+            if (!string.Equals(a.LayeredAnimationName, b.LayeredAnimationName, StringComparison.Ordinal)) return false;
+            if (!string.Equals(a.LayeredAnimationLayerName, b.LayeredAnimationLayerName, StringComparison.Ordinal)) return false;
+            return true;
+        }
+
 
         private Animation GetQueuedAnimation()
         {
@@ -714,8 +747,6 @@ namespace ChatdollKit.Model
         public void StartListeningIdle(Animation idleAnim)
         {
             isListeningMode = true;
-            // Keep idle fallback suppressed outside Idle mode.
-            // Do NOT release suppression here to avoid resuming normal idle while Listening.
             listeningIdleAnimation = idleAnim;
             animationStartAt = 0;
             GetAnimation = GetListeningIdleAnimation;
