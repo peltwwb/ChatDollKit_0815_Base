@@ -226,6 +226,9 @@ namespace ChatdollKit
         private CancellationTokenSource fillerCts;
         // --- ここまで ---
 
+        // 応答開始までprocessingAnimationを維持するためのフラグ
+        private bool speakingBaseAppliedThisTurn = false;
+
         private void Awake()
         {
             // Get ChatdollKit components
@@ -298,6 +301,19 @@ namespace ChatdollKit
                         _ = CharacterMessageWindow.ShowMessageAsync(voice.Text, token);
                     }
                 }
+
+                // 音声再生開始タイミングで初回のみ「発話ベース姿勢」を適用
+                // これにより、応答開始まではprocessingAnimationが維持される
+                if (!speakingBaseAppliedThisTurn && ModelController != null && !string.IsNullOrEmpty(speakingBaseParamKey))
+                {
+                    var baseAnim = new Model.Animation(
+                        speakingBaseParamKey,
+                        speakingBaseParamValue,
+                        speakingBaseDuration
+                    );
+                    ModelController.Animate(new List<Model.Animation> { baseAnim });
+                    speakingBaseAppliedThisTurn = true;
+                }
             };
             ModelController.OnSayEnd = () =>
             {
@@ -312,6 +328,9 @@ namespace ChatdollKit
                 // so that Main stops the listening idle loop before processingAnimation starts
                 Mode = AvatarMode.Conversation;
                 modeTimer = conversationTimeout;
+
+                // 新しいターンの開始時に、発話ベース姿勢の適用フラグをリセット
+                speakingBaseAppliedThisTurn = false;
 
                 // Control microphone at first before AI's speech
                 if (MicrophoneMuteBy == MicrophoneMuteStrategy.StopDevice)
@@ -403,7 +422,7 @@ namespace ChatdollKit
                         Mode = AvatarMode.Listening;
                         modeTimer = idleTimeout;
                         // Do not switch idling mode here to avoid double control with Main.cs
-                        UserMessageWindow?.Show("聞いています");
+                        UserMessageWindow?.Show("【聞いています】");
                         // Listening開始時にModelController側で抑止解除される
                     }
                 }
@@ -445,24 +464,8 @@ namespace ChatdollKit
                     }
                 }
 
-                // Ensure a base speaking pose when no [anim:] tag is provided
-                // Constructed by Animator parameter key/value (numeric), not by registered name
-                if (ModelController != null && !string.IsNullOrEmpty(speakingBaseParamKey))
-                {
-                    foreach (var frame in avreq.AnimatedVoices)
-                    {
-                        if (frame.Animations == null || frame.Animations.Count == 0)
-                        {
-                            frame.AddAnimation(
-                                speakingBaseParamKey,
-                                speakingBaseParamValue,
-                                speakingBaseDuration,
-                                null,
-                                null
-                            );
-                        }
-                    }
-                }
+                // ベースの発話姿勢はOnSayStartで初回のみ適用するため、
+                // ここでは自動注入しない（processingAnimationを応答開始まで維持）
                 contentItem.Data = avreq;
             };
 
@@ -632,7 +635,7 @@ namespace ChatdollKit
                     // Entered Listening or returned to Idling -> show label
                     if (Mode != previousMode || DialogProcessor.Status != previousDialogStatus)
                     {
-                        UserMessageWindow?.Show("聞いています");
+                        UserMessageWindow?.Show("【聞いています】");
                     }
                 }
                 else
