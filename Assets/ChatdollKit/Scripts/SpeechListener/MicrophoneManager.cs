@@ -52,6 +52,12 @@ namespace ChatdollKit.SpeechListener
         public bool AutoMuteWhileAudioPlaying = true;
         [Tooltip("AudioSource that plays the avatar's speech. If null, tries to GetComponent<AudioSource>().")]
         public AudioSource OutputAudioSource;
+        [Tooltip("Keep mic muted for this many seconds after output stops to avoid capturing the TTS tail.")]
+        [Range(0.0f, 1.0f)]
+        public float PostOutputMuteSeconds = 0.25f;
+
+        // Tracks last time output was detected as active to hold a short tail-guard after playback
+        private float lastOutputActiveAt = -100f;
 
         // Expose on inspector for debugging
         public bool IsRecording;
@@ -365,7 +371,25 @@ namespace ChatdollKit.SpeechListener
 
         private bool IsOutputAudioPlaying()
         {
-            return AutoMuteWhileAudioPlaying && OutputAudioSource != null && OutputAudioSource.isPlaying;
+            if (!AutoMuteWhileAudioPlaying || OutputAudioSource == null)
+            {
+                return false;
+            }
+
+            // While playing, always block and refresh the last active time
+            if (OutputAudioSource.isPlaying)
+            {
+                lastOutputActiveAt = Time.time;
+                return true;
+            }
+
+            // Tail guard after playback stops
+            if (PostOutputMuteSeconds > 0.0f && (Time.time - lastOutputActiveAt) < PostOutputMuteSeconds)
+            {
+                return true;
+            }
+
+            return false;
         }
     }
 }
