@@ -132,12 +132,17 @@ namespace ChatdollKit
         [SerializeField]
         [Tooltip("Offset to mic noise-gate threshold used for loudness check (dB). 0 means same as recognition threshold.")]
         private float listeningNodVolumeThresholdDbOffset = 0.0f;
+        [SerializeField]
+        [Tooltip("Guard time after character speech ends before accepting nod triggers (sec)")]
+        [Range(0.0f, 1.0f)]
+        private float listeningNodPostSpeechGuardSec = 0.2f;
 
         // Internals for nod detection
         private ChatdollKit.SpeechListener.MicrophoneManager micForReading; // optional scene mic for CurrentVolumeDb
         private bool listeningPrevRecording = false;
         private float listeningRecStartedAt = -1f;
         private float listeningRecTotalAccum = 0f;
+        private float listeningRecLoudAccum = 0f;
         private bool listeningNodPending = false;
         private bool listeningNodTriggeredForThisRec = false;
         private AudioMixer characterAudioMixer;
@@ -166,6 +171,9 @@ namespace ChatdollKit
             get { return isCharacterMuted; }
             set { MuteCharacter(value); }
         }
+        // Track when character speech just ended to guard nod immediately after
+        private bool previousCharacterSpeaking = false;
+        private float lastCharacterSpeakingEndedAt = -100f;
 
         // Silero VAD via reflection (no hard assembly dependency)
         private Component sileroVADComponent;
@@ -566,6 +574,12 @@ namespace ChatdollKit
             }
             // Avoid applying listening blink while character is speaking
             bool characterSpeaking = ModelController != null && ModelController.AudioSource != null && ModelController.AudioSource.isPlaying;
+            // Track transition from speaking -> not speaking to apply a short guard for nods
+            if (!characterSpeaking && previousCharacterSpeaking)
+            {
+                lastCharacterSpeakingEndedAt = Time.time;
+            }
+            previousCharacterSpeaking = characterSpeaking;
             // Only start using Blink after the first voice detection since entering Listening
             if (Mode == AvatarMode.Listening && voiceDetectedNow)
             {
@@ -637,6 +651,8 @@ namespace ChatdollKit
                 bool recNow = SpeechListener.IsRecording;
                 // Guard against nodding from own TTS
                 bool characterSpeakingNow = ModelController != null && ModelController.AudioSource != null && ModelController.AudioSource.isPlaying;
+                // Accept nod only if some time has passed after character finished speaking
+                bool passedPostSpeechGuard = (Time.time - lastCharacterSpeakingEndedAt) >= listeningNodPostSpeechGuardSec;
 
                 if (recNow)
                 {
@@ -645,6 +661,7 @@ namespace ChatdollKit
                         // Recording started
                         listeningRecStartedAt = Time.time;
                         listeningRecTotalAccum = 0f;
+                        listeningRecLoudAccum = 0f;
                         listeningNodTriggeredForThisRec = false;
                         // Prepare start-timing nod if configured
                         listeningNodPending = (listeningNodTiming == ListeningNodTiming.OnVoiceStart);
@@ -653,11 +670,18 @@ namespace ChatdollKit
                     // Accumulate durations while recording
                     var dt = Time.deltaTime;
                     listeningRecTotalAccum += dt;
+                    // Accumulate loud duration only when voice is actually detected (by VAD/volume)
+                    if (voiceDetectedNow)
+                    {
+                        listeningRecLoudAccum += dt;
+                    }
 
                     // If nod is pending for start timing, and delay has passed, fire once
                     if (listeningNodPending
                         && listeningNodTiming == ListeningNodTiming.OnVoiceStart
                         && !characterSpeakingNow
+                        && passedPostSpeechGuard
+                        && listeningRecLoudAccum >= listeningNodRequiredLoudDurationSec
                         && (Time.time - listeningRecStartedAt) >= listeningNodStartDelaySec)
                     {
                         if (ModelController != null
@@ -681,16 +705,20 @@ namespace ChatdollKit
                 {
                     // Recording just ended: decide and possibly nod
                     var total = listeningRecTotalAccum;
+                    var loud = listeningRecLoudAccum;
 
                     // Reset accumulators for next turn
                     listeningRecStartedAt = -1f;
                     listeningRecTotalAccum = 0f;
+                    listeningRecLoudAccum = 0f;
 
                     // Conditions: within Listening, not currently speaking, recorded long enough and loud long enough
                     if (listeningNodTiming == ListeningNodTiming.OnVoiceEnd
                         && !listeningNodTriggeredForThisRec
                         && !characterSpeakingNow
+                        && passedPostSpeechGuard
                         && total >= listeningNodRequiredRecordingDurationSec
+                        && loud >= listeningNodRequiredLoudDurationSec
                         && ModelController != null
                         && !string.IsNullOrEmpty(listeningNodAdditiveName)
                         && !string.IsNullOrEmpty(listeningNodAdditiveLayer))
@@ -726,15 +754,19 @@ namespace ChatdollKit
                     ModelController?.SetFace(new List<FaceExpression>() { new FaceExpression("Neutral", 0.0f, string.Empty) });
 
                     // Reset nod detection accumulators per listening session
-                    listeningPrevRecording = SpeechListener != null && SpeechListener.IsRecording;
+                    // Always start from non-recording for nod detection to avoid false end triggers
+                    listeningPrevRecording = false;
                     listeningRecStartedAt = -1f;
                     listeningRecTotalAccum = 0f;
+                    listeningRecLoudAccum = 0f;
                     listeningNodPending = false;
                     listeningNodTriggeredForThisRec = false;
                 }
                 // Start/Stop listening base pose
                 if (Mode == AvatarMode.Listening)
                 {
+                    // Ensure idle fallback is suppressed while in Listening
+                    ModelController?.SuppressIdleFallback(true);
                     if (ModelController != null && !string.IsNullOrEmpty(listeningBaseParamKey))
                     {
                         var idleAnim = new Model.Animation(listeningBaseParamKey, listeningBaseParamValue, listeningBaseDuration);

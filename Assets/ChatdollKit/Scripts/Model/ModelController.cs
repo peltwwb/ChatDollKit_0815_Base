@@ -638,6 +638,22 @@ namespace ChatdollKit.Model
                 // Start new animation
                 ResetLayers();
                 animator.SetInteger(animationToRun.ParameterKey, animationToRun.ParameterValue);
+                // Avoid unnecessary layer resets that can cause visible snaps.
+                // Only reset when leaving/entering a state that uses layered additive animation.
+                var prevHadLayer = currentAnimation != null && !string.IsNullOrEmpty(currentAnimation.LayeredAnimationName);
+                var nextHasLayer = !string.IsNullOrEmpty(animationToRun.LayeredAnimationName);
+                if (prevHadLayer || nextHasLayer)
+                {
+                    ResetLayers();
+                }
+
+                // Write base parameter only if it actually changes to prevent redundant transitions
+                if (currentAnimation == null
+                    || currentAnimation.ParameterKey != animationToRun.ParameterKey
+                    || currentAnimation.ParameterValue != animationToRun.ParameterValue)
+                {
+                    animator.SetInteger(animationToRun.ParameterKey, animationToRun.ParameterValue);
+                }
                 if (!string.IsNullOrEmpty(animationToRun.LayeredAnimationName))
                 {
                     var layerIndex = animator.GetLayerIndex(animationToRun.LayeredAnimationLayerName);
@@ -698,7 +714,8 @@ namespace ChatdollKit.Model
         public void StartListeningIdle(Animation idleAnim)
         {
             isListeningMode = true;
-            suppressIdleFallback = false; // listening開始時点でIdle抑止は解除
+            // Keep idle fallback suppressed outside Idle mode.
+            // Do NOT release suppression here to avoid resuming normal idle while Listening.
             listeningIdleAnimation = idleAnim;
             animationStartAt = 0;
             GetAnimation = GetListeningIdleAnimation;

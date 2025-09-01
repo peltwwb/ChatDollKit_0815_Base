@@ -135,10 +135,17 @@ namespace ChatdollKit.SpeechListener
                 bool withinMax = EnableMaxDurationSegmentation ? (recordingDuration <= MaxRecordingDuration) : true;
                 if (recordingDuration >= MinRecordingDuration && withinMax)
                 {
-                    isCompleted = true; // Set isCompleted=true only when the length is valid
+                    // Build the final clip including preroll and reject near‑silent ones to avoid noise hallucinations
                     var combinedSamples = GetCombinedSamples(includePreroll: !prerollConsumed);
                     prerollConsumed = true;
-                    OnRecordingComplete?.Invoke(combinedSamples);
+
+                    // Guard: if the final clip is effectively silent under the current gate, drop it
+                    // This mirrors the segmentation guard in FlushSegment()
+                    if (!IsNearSilent(combinedSamples, currentLinearNoiseGateThreshold))
+                    {
+                        isCompleted = true; // Mark completed only for valid clips
+                        OnRecordingComplete?.Invoke(combinedSamples);
+                    }
                 }
             }
 
