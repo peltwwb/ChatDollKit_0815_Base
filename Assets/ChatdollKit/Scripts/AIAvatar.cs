@@ -202,10 +202,22 @@ namespace ChatdollKit
         private float listeningSilentBlinkMaxDuration = 1.5f; // maximum eyes-closed duration per silent segment
         [SerializeField]
         private float listeningSilentInitialNoBlinkWindow = 5.0f; // do not Blink in first N sec after entering Listening
+        [SerializeField]
+        [Tooltip("Min continuous recording time to 'confirm' non-silent and allow blink (sec)")]
+        [Range(0.0f, 2.0f)]
+        private float listeningBlinkGateRequiredRecordingDurationSec = 0.2f;
+        [SerializeField]
+        [Tooltip("Min time above volume threshold during that recording to 'confirm' non-silent (sec)")]
+        [Range(0.0f, 2.0f)]
+        private float listeningBlinkGateRequiredLoudDurationSec = 0.1f;
         private bool appliedListeningBlink = false;
         private bool detectedVoiceSinceListeningStart = false;
         private float listeningSilentStartedAt = -1f;
         private float listeningEnteredAt = -100f;
+        // Internals for blink gate confirmation
+        private bool listeningBlinkGatePrevRecording = false;
+        private float listeningBlinkGateRecStartedAt = -1f;
+        private float listeningBlinkGateLoudAccumSec = 0f;
  
         [Header("Error")]
         [SerializeField]
@@ -583,10 +595,38 @@ namespace ChatdollKit
                 lastCharacterSpeakingEndedAt = Time.time;
             }
             previousCharacterSpeaking = characterSpeaking;
-            // Only start using Blink after the first voice detection since entering Listening
-            if (Mode == AvatarMode.Listening && voiceDetectedNow)
+            // Only open Blink gate after a confirmed non-silent segment since entering Listening
+            if (Mode == AvatarMode.Listening)
             {
-                detectedVoiceSinceListeningStart = true;
+                bool recNowGate = SpeechListener != null && SpeechListener.IsRecording;
+                if (recNowGate)
+                {
+                    if (!listeningBlinkGatePrevRecording)
+                    {
+                        // Recording just started for gate check
+                        listeningBlinkGateRecStartedAt = Time.time;
+                        listeningBlinkGateLoudAccumSec = 0f;
+                    }
+                    // Accumulate time while actually voiced
+                    if (voiceDetectedNow)
+                    {
+                        listeningBlinkGateLoudAccumSec += Time.deltaTime;
+                    }
+                    // Open gate when both total recording and voiced durations exceed thresholds
+                    if (!detectedVoiceSinceListeningStart
+                        && (Time.time - listeningBlinkGateRecStartedAt) >= listeningBlinkGateRequiredRecordingDurationSec
+                        && listeningBlinkGateLoudAccumSec >= listeningBlinkGateRequiredLoudDurationSec)
+                    {
+                        detectedVoiceSinceListeningStart = true;
+                    }
+                }
+                else if (listeningBlinkGatePrevRecording)
+                {
+                    // Recording ended without opening gate; reset accumulators for next try
+                    listeningBlinkGateRecStartedAt = -1f;
+                    listeningBlinkGateLoudAccumSec = 0f;
+                }
+                listeningBlinkGatePrevRecording = recNowGate;
             }
             bool withinInitialNoBlink = (Mode == AvatarMode.Listening) && (Time.time - listeningEnteredAt < listeningSilentInitialNoBlinkWindow);
             IsListeningSilent = (Mode == AvatarMode.Listening) && nowSilent && !characterSpeaking && detectedVoiceSinceListeningStart && !withinInitialNoBlink;
@@ -754,6 +794,9 @@ namespace ChatdollKit
                     IsListeningSilent = false;
                     listeningSilentStartedAt = -1f;
                     listeningEnteredAt = Time.time;
+                    listeningBlinkGatePrevRecording = false;
+                    listeningBlinkGateRecStartedAt = -1f;
+                    listeningBlinkGateLoudAccumSec = 0f;
                     ModelController?.SetFace(new List<FaceExpression>() { new FaceExpression("Neutral", 0.0f, string.Empty) });
 
                     // Reset nod detection accumulators per listening session
