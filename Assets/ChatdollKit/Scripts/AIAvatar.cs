@@ -377,9 +377,15 @@ namespace ChatdollKit
                 // Show user message
                 if (UserMessageWindow != null && !string.IsNullOrEmpty(text))
                 {
-                    if (!showMessageWindowOnWake && payloads != null && payloads.ContainsKey("IsWakeword") && (bool)payloads["IsWakeword"])
+                    // Suppress explicitly when requested (e.g., wake button initial input)
+                    if (payloads != null && payloads.ContainsKey("SuppressUserMessage")
+                        && payloads["SuppressUserMessage"] is bool && (bool)payloads["SuppressUserMessage"])
                     {
-                        // Don't show message window on wakeword
+                        // Don't show user message this time
+                    }
+                    else if (!showMessageWindowOnWake && payloads != null && payloads.ContainsKey("IsWakeword") && (bool)payloads["IsWakeword"])
+                    {
+                        // Don't show message window on wakeword when disabled by setting
                     }
                     else if (text.StartsWith(BackgroundRequestPrefix))
                     {

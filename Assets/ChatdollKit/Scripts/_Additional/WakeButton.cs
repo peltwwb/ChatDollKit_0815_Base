@@ -36,9 +36,15 @@ public class WakeButton : MonoBehaviour
         }
 
         // Start dialog and wait until it completes
+        // 初回のWake（ボタン押下）ではユーザー側メッセージ表示を抑止
+        var payloads = new Dictionary<string, object>
+        {
+            { "SuppressUserMessage", true },
+            { "IsWakeword", true },
+        };
         await DialogProcessor.StartDialogAsync(
             "こんにちは",
-            new Dictionary<string, object>(),
+            payloads,
             true);
 
         // Restore mic component states
