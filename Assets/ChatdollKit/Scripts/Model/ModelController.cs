@@ -618,7 +618,11 @@ namespace ChatdollKit.Model
                     // 明示アニメが無いフレームでは直前のベース姿勢を維持
                     if (currentAnimation != null)
                     {
-                        animator.SetInteger(currentAnimation.ParameterKey, currentAnimation.ParameterValue);
+                        // Avoid redundant writes that can cause unintended transitions in some controllers
+                        if (animator.GetInteger(currentAnimation.ParameterKey) != currentAnimation.ParameterValue)
+                        {
+                            animator.SetInteger(currentAnimation.ParameterKey, currentAnimation.ParameterValue);
+                        }
                     }
                     return;
                 }
@@ -633,7 +637,7 @@ namespace ChatdollKit.Model
             }
 
             // Start or switch animation only when the actual content differs
-            if (currentAnimation == null || !AreAnimationsEquivalent(animationToRun, currentAnimation))
+            if (forceRetrigger || currentAnimation == null || !AreAnimationsEquivalent(animationToRun, currentAnimation))
             {
                 // Start new (or different) animation
                 // Avoid unnecessary global layer resets that can cause visible snaps.
@@ -641,12 +645,7 @@ namespace ChatdollKit.Model
 
                 var prevHadLayer = currentAnimation != null && !string.IsNullOrEmpty(currentAnimation.LayeredAnimationName);
                 var nextHasLayer = !string.IsNullOrEmpty(animationToRun.LayeredAnimationName);
-                if (prevHadLayer && !nextHasLayer)
-                {
-                    // Previously had additive, now none -> reset that layer to default
-                    ResetLayerByName(currentAnimation.LayeredAnimationLayerName);
-                }
-                else if (prevHadLayer && nextHasLayer)
+                if (prevHadLayer && nextHasLayer)
                 {
                     // Switching additive layers. If layer differs, reset previous layer only.
                     if (currentAnimation.LayeredAnimationLayerName != animationToRun.LayeredAnimationLayerName)
@@ -671,6 +670,7 @@ namespace ChatdollKit.Model
                 }
                 currentAnimation = animationToRun;
                 animationStartAt = Time.realtimeSinceStartup;
+                forceRetrigger = false;
             }
         }
 
@@ -738,6 +738,9 @@ namespace ChatdollKit.Model
         private Animation listeningIdleAnimation;
         private Animation listeningTriggerAnimation;
         private bool triggerAnimationRequested = false;
+        private bool forceRetrigger = false;
+        // Keep additive state active for a short duration without resetting base to avoid visual snapping
+        private float listeningAdditiveActiveUntil = -1f;
 
         public void SuppressIdleFallback(bool suppress)
         {
@@ -755,6 +758,7 @@ namespace ChatdollKit.Model
         public void StopListeningIdle()
         {
             isListeningMode = false;
+            listeningAdditiveActiveUntil = -1f;
             GetAnimation = GetIdleAnimation;
         }
 
@@ -762,26 +766,39 @@ namespace ChatdollKit.Model
         {
             listeningTriggerAnimation = triggerAnim;
             triggerAnimationRequested = true;
+            // Keep additive active for its duration; smooth reset will happen after
+            listeningAdditiveActiveUntil = Time.realtimeSinceStartup + (triggerAnim?.Duration ?? 0.0f);
+            // Allow retriggering same additive state by forcing UpdateAnimation to apply even if equivalent
+            forceRetrigger = true;
         }
 
         private Animation GetListeningIdleAnimation()
         {
+            // 1) Incoming trigger: start additive overlay without resetting base timer
             if (triggerAnimationRequested && listeningTriggerAnimation != null)
             {
                 triggerAnimationRequested = false;
-                animationStartAt = 0;
+                // Do not reset base timer; simply overlay additive
                 return listeningTriggerAnimation;
             }
 
+            // 2) Additive finished: explicitly return base-only once to smoothly reset the additive layer
+            if (listeningAdditiveActiveUntil > 0f && Time.realtimeSinceStartup >= listeningAdditiveActiveUntil)
+            {
+                listeningAdditiveActiveUntil = -1f;
+                // Return null so we keep the base pose without forcing a layer reset
+                return null;
+            }
+
+            // 3) Periodically refresh listening idle based on its own duration
             if (currentAnimation == null || animationStartAt == 0 || Time.realtimeSinceStartup - animationStartAt > listeningIdleAnimation.Duration)
             {
                 animationStartAt = Time.realtimeSinceStartup;
                 return listeningIdleAnimation;
             }
-            else
-            {
-                return null;
-            }
+
+            // 4) Otherwise, keep current pose and any running additive
+            return null;
         }
 
         public void RegisterAnimations(Dictionary<string, Animation> animations)
@@ -841,8 +858,12 @@ namespace ChatdollKit.Model
             var faceToSet = GetFaceExpression();
             if (faceToSet == null)
             {
-                // Set neutral instead when faceToSet is null
-                SetFace(new List<FaceExpression>() { new FaceExpression("Neutral", 0.0f, string.Empty) });
+                // Queue empty: if there's no current face or the previous one has just finished (faceStartAt == 0),
+                // set Neutral once with a non-zero duration to avoid per-frame re-enqueue.
+                if (currentFace == null || faceStartAt == 0f)
+                {
+                    SetFace(new List<FaceExpression>() { new FaceExpression("Neutral", defaultFaceExpressionDuration, string.Empty) });
+                }
                 return;
             }
 

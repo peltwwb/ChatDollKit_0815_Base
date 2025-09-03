@@ -122,6 +122,10 @@ namespace ChatdollKit
         [Range(0.0f, 2.0f)]
         private float listeningNodStartDelaySec = 0.0f;
         [SerializeField]
+        [Tooltip("Interval to repeatedly nod while voice is detected (seconds). Set > 0 to enable.")]
+        [Range(0.0f, 10f)]
+        private float listeningNodRepeatIntervalSec = 2.0f;
+        [SerializeField]
         [Tooltip("Minimum total recording duration to accept an utterance for nod (sec)")]
         [Range(0.05f, 5f)]
         private float listeningNodRequiredRecordingDurationSec = 0.3f;
@@ -145,6 +149,8 @@ namespace ChatdollKit
         private float listeningRecLoudAccum = 0f;
         private bool listeningNodPending = false;
         private bool listeningNodTriggeredForThisRec = false;
+        // Track last nod timing while repeating
+        private float listeningNodLastFiredAt = -1f;
         private AudioMixer characterAudioMixer;
         [SerializeField]
         private string characterVolumeParameter = "CharacterVolume";
@@ -712,8 +718,10 @@ namespace ChatdollKit
                         listeningRecTotalAccum = 0f;
                         listeningRecLoudAccum = 0f;
                         listeningNodTriggeredForThisRec = false;
-                        // Prepare start-timing nod if configured
-                        listeningNodPending = (listeningNodTiming == ListeningNodTiming.OnVoiceStart);
+                        // Reset repeat timing at the start of a recording
+                        listeningNodLastFiredAt = -1f;
+                        // Prepare start-timing nod only when repeat is disabled
+                        listeningNodPending = (listeningNodRepeatIntervalSec <= 0f && listeningNodTiming == ListeningNodTiming.OnVoiceStart);
                     }
 
                     // Accumulate durations while recording
@@ -725,8 +733,59 @@ namespace ChatdollKit
                         listeningRecLoudAccum += dt;
                     }
 
-                    // If nod is pending for start timing, and delay has passed, fire once
-                    if (listeningNodPending
+                    // Repeat nod while voice is detected (every listeningNodRepeatIntervalSec)
+                    if (listeningNodRepeatIntervalSec > 0f
+                        && voiceDetectedNow
+                        && !characterSpeakingNow
+                        && passedPostSpeechGuard)
+                    {
+                        // First nod after start delay and loudness gate
+                        if (listeningNodLastFiredAt < 0f)
+                        {
+                            if (listeningRecLoudAccum >= listeningNodRequiredLoudDurationSec
+                                && (Time.time - listeningRecStartedAt) >= listeningNodStartDelaySec)
+                            {
+                                if (ModelController != null
+                                    && !string.IsNullOrEmpty(listeningNodAdditiveName)
+                                    && !string.IsNullOrEmpty(listeningNodAdditiveLayer))
+                                {
+                                    var triggerAnim = new Model.Animation(
+                                        listeningBaseParamKey,
+                                        listeningBaseParamValue,
+                                        listeningNodTriggerDuration,
+                                        listeningNodAdditiveName,
+                                        listeningNodAdditiveLayer
+                                    );
+                                    ModelController.TriggerListeningAnimation(triggerAnim);
+                                    listeningNodLastFiredAt = Time.time;
+                                    listeningNodTriggeredForThisRec = true;
+                                    listeningNodPending = false; // ensure one-shot path is disabled once repeat starts
+                                }
+                            }
+                        }
+                        // Subsequent nods at the configured interval
+                        else if ((Time.time - listeningNodLastFiredAt) >= listeningNodRepeatIntervalSec)
+                        {
+                            if (ModelController != null
+                                && !string.IsNullOrEmpty(listeningNodAdditiveName)
+                                && !string.IsNullOrEmpty(listeningNodAdditiveLayer))
+                            {
+                                var triggerAnim = new Model.Animation(
+                                    listeningBaseParamKey,
+                                    listeningBaseParamValue,
+                                    listeningNodTriggerDuration,
+                                    listeningNodAdditiveName,
+                                    listeningNodAdditiveLayer
+                                );
+                                ModelController.TriggerListeningAnimation(triggerAnim);
+                                listeningNodLastFiredAt = Time.time;
+                            }
+                        }
+                    }
+
+                    // If nod is pending for start timing (only when repeat disabled), and delay has passed, fire once
+                    if (listeningNodRepeatIntervalSec <= 0f
+                        && listeningNodPending
                         && listeningNodTiming == ListeningNodTiming.OnVoiceStart
                         && !characterSpeakingNow
                         && passedPostSpeechGuard
@@ -762,7 +821,9 @@ namespace ChatdollKit
                     listeningRecLoudAccum = 0f;
 
                     // Conditions: within Listening, not currently speaking, recorded long enough and loud long enough
-                    if (listeningNodTiming == ListeningNodTiming.OnVoiceEnd
+                    // Only when repeat is disabled; repeat stops when detection ends
+                    if (listeningNodRepeatIntervalSec <= 0f
+                        && listeningNodTiming == ListeningNodTiming.OnVoiceEnd
                         && !listeningNodTriggeredForThisRec
                         && !characterSpeakingNow
                         && passedPostSpeechGuard
@@ -783,6 +844,7 @@ namespace ChatdollKit
                         listeningNodTriggeredForThisRec = true;
                     }
                     listeningNodPending = false;
+                    listeningNodLastFiredAt = -1f; // reset repeat timer when recording ends
                 }
 
                 listeningPrevRecording = recNow;
@@ -813,6 +875,7 @@ namespace ChatdollKit
                     listeningRecLoudAccum = 0f;
                     listeningNodPending = false;
                     listeningNodTriggeredForThisRec = false;
+                    listeningNodLastFiredAt = -1f;
                 }
                 // Start/Stop listening base pose
                 if (Mode == AvatarMode.Listening)

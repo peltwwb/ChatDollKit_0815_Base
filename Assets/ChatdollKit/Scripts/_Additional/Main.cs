@@ -83,7 +83,7 @@ namespace ChatdollKit.Demo
             // Animation and face expression for processing (Use when the response takes a long time)
             var processingAnimation = new List<Model.Animation>();
             //processingAnimation.Add(modelController.GetRegisteredAnimation("concern_right_hand_front", 0.3f));
-            processingAnimation.Add(modelController.GetRegisteredAnimation("concern_right_hand_front", 20.0f, "AGIA_Layer_nod_once_01", "Additive Layer"));
+            processingAnimation.Add(modelController.GetRegisteredAnimation("concern_right_hand_front", 20.0f));
             var processingFace = new List<FaceExpression>();
             //processingFace.Add(new FaceExpression("Blink", 3.0f));
             gameObject.GetComponent<AIAvatar>().AddProcessingPresentaion(processingAnimation, processingFace);
