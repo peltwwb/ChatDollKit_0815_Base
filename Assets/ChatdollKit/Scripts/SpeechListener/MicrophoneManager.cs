@@ -1,5 +1,8 @@
 using System.Collections.Generic;
 using UnityEngine;
+#if UNITY_ANDROID && !UNITY_EDITOR
+using UnityEngine.Android;
+#endif
 #if UNITY_WEBGL && !UNITY_EDITOR
 using System;
 using System.Globalization;
@@ -91,6 +94,14 @@ namespace ChatdollKit.SpeechListener
             UpdateLinearVolumes();
             if (AutoStart)
             {
+#if UNITY_ANDROID && !UNITY_EDITOR
+                // Ensure microphone permission is granted before starting on Android
+                if (!Permission.HasUserAuthorizedPermission(Permission.Microphone))
+                {
+                    Permission.RequestUserPermission(Permission.Microphone);
+                    Debug.Log("Requested Android microphone permission");
+                }
+#endif
                 StartMicrophone();
             }
         }
@@ -147,17 +158,33 @@ namespace ChatdollKit.SpeechListener
             }
 
             if (microphoneClip != null)
-                {
-                    Debug.Log("Microphone already started");
-                    return;
-                }
-
-            if (MicrophoneDevice == null)
             {
-                MicrophoneDevice = MicrophoneProvider.devices[0];
+                Debug.Log("Microphone already started");
+                return;
             }
 
-            microphoneClip = MicrophoneProvider.Start(MicrophoneDevice, true, 1, SampleRate);
+            // Select default device safely
+            if (string.IsNullOrEmpty(MicrophoneDevice))
+            {
+                var devices = MicrophoneProvider.devices;
+                if (devices == null || devices.Length == 0)
+                {
+                    Debug.LogError("No microphone devices available. Ensure permission is granted and a mic is present.");
+                    return;
+                }
+                MicrophoneDevice = devices[0];
+            }
+
+            try
+            {
+                microphoneClip = MicrophoneProvider.Start(MicrophoneDevice, true, 1, SampleRate);
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError($"Failed to start microphone '{MicrophoneDevice}': {ex.Message}");
+                microphoneClip = null;
+                return;
+            }
             lastSamplePosition = 0;
 
             if (IsDebug) Debug.Log($"Microphone started: {MicrophoneDevice}");
