@@ -674,6 +674,30 @@ namespace ChatdollKit.Model
             }
         }
 
+        // Immediately override base pose and clear queued animations.
+        // Use when we must snap to a safe base (e.g., switching to Listening)
+        public void ApplyBaseImmediately(Animation baseAnimation, bool clearQueued = true, bool resetAdditiveLayers = false)
+        {
+            if (baseAnimation == null) return;
+            if (clearQueued)
+            {
+                animationQueue.Clear();
+            }
+            currentAnimation = baseAnimation;
+            animationStartAt = Time.realtimeSinceStartup;
+            // Write animator parameter now so there is no one-frame delay
+            if (animator != null)
+            {
+                animator.SetInteger(baseAnimation.ParameterKey, baseAnimation.ParameterValue);
+                if (resetAdditiveLayers)
+                {
+                    ResetLayers();
+                }
+            }
+            // Ensure UpdateAnimation won't skip due to equivalence
+            forceRetrigger = false;
+        }
+
         // Reset only specified layer to default state to minimize visual snapping
         private void ResetLayerByName(string layerName)
         {

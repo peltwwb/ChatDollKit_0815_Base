@@ -443,6 +443,14 @@ namespace ChatdollKit
                     else
                     {
                         // Normal turn end: go to Listening and wait for next input
+                        // Apply Listening base immediately to avoid any leftover prompt animation flashing
+                        if (ModelController != null && !string.IsNullOrEmpty(listeningBaseParamKey))
+                        {
+                            var immediateListeningBase = new Model.Animation(listeningBaseParamKey, listeningBaseParamValue, listeningBaseDuration);
+                            // Clear queued prompt animations and write base now
+                            ModelController.ApplyBaseImmediately(immediateListeningBase, clearQueued: true, resetAdditiveLayers: false);
+                        }
+
                         Mode = AvatarMode.Listening;
                         modeTimer = idleTimeout;
                         // Do not switch idling mode here to avoid double control with Main.cs
