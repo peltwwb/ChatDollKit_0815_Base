@@ -453,15 +453,10 @@ namespace ChatdollKit.LLM.ChatGPT
                             continue;
                         }
 
-                        // Azure OpenAI returns empty choices first response. (returns prompt_filter_results)
-                        try
+                        // Azure OpenAI can return an initial chunk with no choices
+                        // (e.g., prompt_filter_results). Treat null/empty choices as a no-op.
+                        if (j == null || j.choices == null || j.choices.Count == 0)
                         {
-                            if (j == null) continue;
-                            if (j.choices.Count == 0) continue;
-                        }
-                        catch (Exception)
-                        {
-                            Debug.LogError($"Empty choices error: {JsonConvert.SerializeObject(j)}");
                             continue;
                         }
 
