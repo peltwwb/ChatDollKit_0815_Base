@@ -100,7 +100,7 @@ namespace ChatdollKit.Examples.ChatGPT
             // 2) システムプロンプト
             const string sysPrompt =
                 "あなたは厳密な根拠を示すアシスタントです。まず file_search ツールで参照資料を検索し、"
-              + "根拠に基づいて簡潔に回答してください。出典が曖昧な場合は不確実と明示します。";
+              + "根拠に基づいて簡潔に元気よく回答してください。出典が曖昧な場合は不確実と明示します。";
 
             // 3) Responses API ボディ作成（tools に file_search + vector_store_ids）
             var tools = new object[]
