@@ -723,6 +723,12 @@ namespace ChatdollKit.Model
 
         private Animation GetIdleAnimation()
         {
+            // When idle fallback is suppressed, keep the current base pose without returning a new idle clip
+            if (suppressIdleFallback)
+            {
+                return null;
+            }
+
             if (currentAnimation == null || animationStartAt == 0 || Time.realtimeSinceStartup - animationStartAt > currentAnimation.Duration)
             {
                 // Return random idle animation when:

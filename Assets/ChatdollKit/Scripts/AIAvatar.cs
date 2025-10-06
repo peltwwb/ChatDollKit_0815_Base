@@ -876,6 +876,9 @@ namespace ChatdollKit
             // Speech listener config
             if (Mode != previousMode)
             {
+                // Non-idle modes must keep idle fallback suppressed to avoid flashing the idle pose
+                ModelController?.SuppressIdleFallback(Mode != AvatarMode.Idle);
+
                 // Reset Blink gating when entering Listening
                 if (Mode == AvatarMode.Listening)
                 {
@@ -916,8 +919,6 @@ namespace ChatdollKit
                 // Start/Stop listening base pose
                 if (Mode == AvatarMode.Listening)
                 {
-                    // Ensure idle fallback is suppressed while in Listening
-                    ModelController?.SuppressIdleFallback(true);
                     if (ModelController != null && !string.IsNullOrEmpty(listeningBaseParamKey))
                     {
                         var idleAnim = new Model.Animation(listeningBaseParamKey, listeningBaseParamValue, listeningBaseDuration);
@@ -985,13 +986,13 @@ namespace ChatdollKit
                     UserMessageWindow?.Hide();
                     break;
                 case ListeningVoiceMessageState.NoInput:
-                    UserMessageWindow?.Show($"{prefix}\n音声は入力されていません");
+                    UserMessageWindow?.Show($"{prefix}\n入力待機中・・・");
                     break;
                 case ListeningVoiceMessageState.Inputting:
-                    UserMessageWindow?.Show($"{prefix}\n音声入力中です");
+                    UserMessageWindow?.Show($"{prefix}\n音声入力中・・・");
                     break;
                 case ListeningVoiceMessageState.InputReceived:
-                    UserMessageWindow?.Show($"{prefix}\n音声が入力されました");
+                    UserMessageWindow?.Show($"{prefix}\n文字起こし中・・・");
                     break;
             }
         }
