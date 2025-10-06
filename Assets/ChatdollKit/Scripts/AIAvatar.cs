@@ -143,6 +143,10 @@ namespace ChatdollKit
 
         // Internals for nod detection
         private ChatdollKit.SpeechListener.MicrophoneManager micForReading; // optional scene mic for CurrentVolumeDb
+        private IMicrophoneManager microphoneControl; // concrete mic control target accepting strategy operations
+        private bool microphoneMutedByAvatar = false;
+        private bool speechListenerSuspendedByAvatar = false;
+        private float defaultNoiseGateThresholdDb;
         private bool listeningPrevRecording = false;
         private float listeningRecStartedAt = -1f;
         private float listeningRecTotalAccum = 0f;
@@ -181,13 +185,6 @@ namespace ChatdollKit
         private bool previousCharacterSpeaking = false;
         private float lastCharacterSpeakingEndedAt = -100f;
 
-        // Silero VAD via reflection (no hard assembly dependency)
-        private Component sileroVADComponent;
-        private System.Type sileroVADType;
-        private System.Reflection.MethodInfo sileroInitializeMethod;
-        private System.Reflection.MethodInfo sileroSetSourceSampleRateMethod;
-        private System.Reflection.MethodInfo sileroIsVoicedMethod;
-
         [Header("ChatdollKit components")]
         public ModelController ModelController;
         public DialogProcessor DialogProcessor;
@@ -224,6 +221,15 @@ namespace ChatdollKit
         private bool listeningBlinkGatePrevRecording = false;
         private float listeningBlinkGateRecStartedAt = -1f;
         private float listeningBlinkGateLoudAccumSec = 0f;
+
+        [Header("Post Speech Guard")]
+        [SerializeField]
+        [Tooltip("Ignore recognition for a short time after character speech ends to avoid self-echo.")]
+        private bool enablePostSpeechRecognitionGuard = true;
+        [SerializeField]
+        [Tooltip("Seconds to ignore recognition after speech ends when guard is enabled.")]
+        [Range(0.0f, 2.0f)]
+        private float postSpeechRecognitionGuardSec = 0.5f;
  
         [Header("Error")]
         [SerializeField]
@@ -266,48 +272,36 @@ namespace ChatdollKit
                 micForReading = FindFirstObjectByType<SpeechListener.MicrophoneManager>();
             }
 
+            microphoneControl = (IMicrophoneManager)(micForReading ?? MicrophoneManager);
+            defaultNoiseGateThresholdDb = VoiceRecognitionThresholdDB;
+            if (micForReading != null)
+            {
+                defaultNoiseGateThresholdDb = micForReading.NoiseGateThresholdDb;
+            }
+
             // Setup MicrophoneManager
-            MicrophoneManager.SetNoiseGateThresholdDb(VoiceRecognitionThresholdDB);
+            microphoneControl?.SetNoiseGateThresholdDb(VoiceRecognitionThresholdDB);
 
             // Ensure self-capture protection: route the avatar's AudioSource to the mic manager
             // so it can auto-mute mic while the character is speaking.
-            if (MicrophoneManager is SpeechListener.MicrophoneManager mm)
+            if (micForReading != null)
             {
-                if (mm.OutputAudioSource == null)
+                if (micForReading.OutputAudioSource == null)
                 {
-                    mm.OutputAudioSource = (ModelController != null && ModelController.AudioSource != null)
+                    micForReading.OutputAudioSource = (ModelController != null && ModelController.AudioSource != null)
                         ? ModelController.AudioSource
                         : GetComponent<AudioSource>();
                 }
                 // Keep auto-mute enabled by default to avoid picking up own TTS
-                mm.AutoMuteWhileAudioPlaying = true;
-            }
-
-            // Resolve Silero VAD (by name to avoid asmdef dependency)
-            sileroVADComponent = GetComponent("SileroVADProcessor") as Component;
-            if (sileroVADComponent == null)
-            {
-                // Search in scene
-                foreach (var c in FindObjectsOfType<Component>())
-                {
-                    if (c != null && c.GetType().Name == "SileroVADProcessor")
-                    {
-                        sileroVADComponent = c;
-                        break;
-                    }
-                }
-            }
-            if (sileroVADComponent != null)
-            {
-                sileroVADType = sileroVADComponent.GetType();
-                sileroInitializeMethod = sileroVADType.GetMethod("Initialize", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
-                sileroSetSourceSampleRateMethod = sileroVADType.GetMethod("SetSourceSampleRate", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
-                sileroIsVoicedMethod = sileroVADType.GetMethod("IsVoiced", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                micForReading.AutoMuteWhileAudioPlaying = true;
             }
 
             // Setup ModelController
             ModelController.OnSayStart = async (voice, token) =>
             {
+                // Ensure microphone is muted while character speaks even if dialog bypassed the request hook
+                ApplyMicrophoneMuteState(true);
+
                 if (!string.IsNullOrEmpty(voice.Text))
                 {
                     if (CharacterMessageWindow != null)
@@ -351,22 +345,7 @@ namespace ChatdollKit
                 speakingBaseAppliedThisTurn = false;
 
                 // Control microphone at first before AI's speech
-                if (MicrophoneMuteBy == MicrophoneMuteStrategy.StopDevice)
-                {
-                    MicrophoneManager.StopMicrophone();
-                }
-                else if (MicrophoneMuteBy == MicrophoneMuteStrategy.StopListener)
-                {
-                    SpeechListener.StopListening();
-                }
-                else if (MicrophoneMuteBy == MicrophoneMuteStrategy.Mute)
-                {
-                    MicrophoneManager.MuteMicrophone(true);
-                }
-                else if (MicrophoneMuteBy == MicrophoneMuteStrategy.Threshold)
-                {
-                    MicrophoneManager.SetNoiseGateThresholdDb(VoiceRecognitionRaisedThresholdDB);
-                }
+                ApplyMicrophoneMuteState(true);
 
                 // Processing開始中はIdleフォールバックを必ず抑止
                 ModelController.SuppressIdleFallback(true);
@@ -411,22 +390,7 @@ namespace ChatdollKit
             DialogProcessor.OnEndAsync = async (endConversation, token) =>
             {
                 // Control microphone after response / error shown
-                if (MicrophoneMuteBy == MicrophoneMuteStrategy.StopDevice)
-                {
-                    MicrophoneManager.StartMicrophone();
-                }
-                else if (MicrophoneMuteBy == MicrophoneMuteStrategy.StopListener)
-                {
-                    SpeechListener.StartListening();
-                }
-                else if (MicrophoneMuteBy == MicrophoneMuteStrategy.Mute)
-                {
-                    MicrophoneManager.MuteMicrophone(false);
-                }
-                else if (MicrophoneMuteBy == MicrophoneMuteStrategy.Threshold)
-                {
-                    MicrophoneManager.SetNoiseGateThresholdDb(VoiceRecognitionThresholdDB);
-                }
+                ApplyMicrophoneMuteState(false);
 
                 if (!token.IsCancellationRequested)
                 {
@@ -464,6 +428,7 @@ namespace ChatdollKit
             {
                 // Stop speaking immediately
                 ModelController.StopSpeech();
+                ApplyMicrophoneMuteState(false);
 
                 // Return to Idle when no successive dialogs are allocated
                 if (!forSuccessiveDialog)
@@ -537,37 +502,6 @@ namespace ChatdollKit
                 minRecordingDuration: idleMinRecordingDuration,
                 maxRecordingDuration: idleMaxRecordingDuration
             );
-
-            // Plug Silero VAD into speech detection if available
-            if (SpeechListener is SpeechListenerBase slBase && sileroVADComponent != null && sileroIsVoicedMethod != null)
-            {
-                try
-                {
-                    if (sileroInitializeMethod != null)
-                    {
-                        sileroInitializeMethod.Invoke(sileroVADComponent, null);
-                    }
-                    if (micForReading != null && sileroSetSourceSampleRateMethod != null)
-                    {
-                        sileroSetSourceSampleRateMethod.Invoke(sileroVADComponent, new object[] { micForReading.SampleRate });
-                    }
-                }
-                catch { /* ignore */ }
-
-                // Build delegate that forwards to SileroVADProcessor.IsVoiced(samples, lin)
-                slBase.DetectVoiceFunctions = new List<Func<float[], float, bool>>()
-                {
-                    (samples, lin) =>
-                    {
-                        try
-                        {
-                            var res = sileroIsVoicedMethod.Invoke(sileroVADComponent, new object[] { samples, lin });
-                            return res is bool b && b;
-                        }
-                        catch { return false; }
-                    }
-                };
-            }
 
             // Setup SpeechSynthesizer
             foreach (var speechSynthesizer in gameObject.GetComponents<ISpeechSynthesizer>())
@@ -1177,6 +1111,8 @@ namespace ChatdollKit
                 Mode = AvatarMode.Idle;
                 modeTimer = idleTimeout;
             }
+
+            ApplyMicrophoneMuteState(false);
         }
 
         public void AddProcessingPresentaion(List<Model.Animation> animations, List<FaceExpression> faces)
@@ -1186,6 +1122,118 @@ namespace ChatdollKit
                 Animations = animations,
                 Faces = faces
             });
+        }
+
+        private void ApplyMicrophoneMuteState(bool mute, bool force = false)
+        {
+            var control = microphoneControl ?? MicrophoneManager;
+            var previousState = microphoneMutedByAvatar;
+            var stateChanged = previousState != mute;
+
+            if (!stateChanged && !force)
+            {
+                if (!mute && MicrophoneMuteBy == MicrophoneMuteStrategy.Threshold && micForReading != null)
+                {
+                    defaultNoiseGateThresholdDb = micForReading.NoiseGateThresholdDb;
+                }
+                return;
+            }
+
+            if (mute && MicrophoneMuteBy == MicrophoneMuteStrategy.Threshold)
+            {
+                if (micForReading != null)
+                {
+                    defaultNoiseGateThresholdDb = micForReading.NoiseGateThresholdDb;
+                }
+                else if (control != null)
+                {
+                    defaultNoiseGateThresholdDb = VoiceRecognitionThresholdDB;
+                }
+            }
+
+            microphoneMutedByAvatar = mute;
+
+            switch (MicrophoneMuteBy)
+            {
+                case MicrophoneMuteStrategy.StopDevice:
+                    if (mute)
+                    {
+                        control?.StopMicrophone();
+                    }
+                    else
+                    {
+                        control?.StartMicrophone();
+                    }
+                    break;
+                case MicrophoneMuteStrategy.StopListener:
+                    // handled in UpdateSpeechListenerSuspension
+                    break;
+                case MicrophoneMuteStrategy.Mute:
+                    control?.MuteMicrophone(mute);
+                    break;
+                case MicrophoneMuteStrategy.Threshold:
+                    if (mute)
+                    {
+                        control?.SetNoiseGateThresholdDb(VoiceRecognitionRaisedThresholdDB);
+                    }
+                    else
+                    {
+                        control?.SetNoiseGateThresholdDb(defaultNoiseGateThresholdDb);
+                        if (micForReading != null)
+                        {
+                            defaultNoiseGateThresholdDb = micForReading.NoiseGateThresholdDb;
+                        }
+                    }
+                    break;
+                case MicrophoneMuteStrategy.None:
+                default:
+                    break;
+            }
+
+            UpdateSpeechListenerSuspension(mute, force || stateChanged);
+
+            if (mute)
+            {
+                ResetListeningVoiceDetectionState();
+            }
+
+            if (!mute && MicrophoneMuteBy != MicrophoneMuteStrategy.Threshold && micForReading != null)
+            {
+                defaultNoiseGateThresholdDb = micForReading.NoiseGateThresholdDb;
+            }
+        }
+
+        private void ResetListeningVoiceDetectionState()
+        {
+            listeningPrevRecording = false;
+            listeningRecStartedAt = -1f;
+            listeningRecTotalAccum = 0f;
+            listeningRecLoudAccum = 0f;
+            listeningNodPending = false;
+            listeningNodTriggeredForThisRec = false;
+            listeningNodLastFiredAt = -1f;
+        }
+
+        private void UpdateSpeechListenerSuspension(bool mute, bool allowForce)
+        {
+            if (SpeechListener == null) return;
+
+            if (mute)
+            {
+                if (!speechListenerSuspendedByAvatar || allowForce)
+                {
+                    SpeechListener.StopListening();
+                    speechListenerSuspendedByAvatar = true;
+                }
+            }
+            else
+            {
+                if (speechListenerSuspendedByAvatar || allowForce)
+                {
+                    SpeechListener.StartListening(true);
+                    speechListenerSuspendedByAvatar = false;
+                }
+            }
         }
 
         private async UniTask OnErrorAsyncDefault(string text, Dictionary<string, object> payloads, Exception ex, CancellationToken token)
@@ -1206,84 +1254,100 @@ namespace ChatdollKit
             }
 
             await ModelController.AnimatedSay(errorAnimatedVoiceRequest, token);
+
+            ApplyMicrophoneMuteState(false);
         }
 
         private async UniTask OnSpeechListenerRecognized(string text)
         {
             if (string.IsNullOrEmpty(text) || Mode == AvatarMode.Disabled) return;
 
-            // Detect speaking state of the character (avoid echo loops)
+            var isListeningMode = Mode == AvatarMode.Listening;
+            var isWakeListeningMode = Mode == AvatarMode.Idle || Mode == AvatarMode.Sleep;
+
+            if (!isListeningMode && !isWakeListeningMode)
+            {
+                // Ignore recognition during Conversation/Sleep transitions
+                return;
+            }
+
+            if (isWakeListeningMode)
+            {
+                var wakeWord = ExtractWakeWord(text);
+                if (!string.IsNullOrEmpty(wakeWord))
+                {
+                    if (OnWakeAsync != null)
+                    {
+                        await OnWakeAsync(text);
+                    }
+                    var payloads = GetPayloads?.Invoke();
+                    if (payloads == null || payloads.Count == 0)
+                    {
+                        payloads = new Dictionary<string, object>();
+                    }
+                    payloads["IsWakeword"] = true;
+                    _ = DialogProcessor.StartDialogAsync(text, payloads: payloads);
+                }
+                return;
+            }
+
+            // Listening mode only beyond this point
+
+            if (enablePostSpeechRecognitionGuard)
+            {
+                var elapsed = Time.time - lastCharacterSpeakingEndedAt;
+                if (elapsed >= 0f && elapsed < postSpeechRecognitionGuardSec)
+                {
+                    return;
+                }
+            }
+
             bool characterSpeaking = ModelController != null && ModelController.AudioSource != null && ModelController.AudioSource.isPlaying;
 
-            // Pre-extract control words once
             var cancelWord = ExtractCancelWord(text);
             var exitWord = ExtractExitWord(text);
             var interruptWord = ExtractInterruptWord(text);
 
-            // If the character is currently speaking, ignore non-control utterances to avoid feedback loops
             if (characterSpeaking && string.IsNullOrEmpty(cancelWord) && string.IsNullOrEmpty(exitWord) && string.IsNullOrEmpty(interruptWord))
             {
                 return;
             }
 
-            // Cancel Word
             if (!string.IsNullOrEmpty(cancelWord))
             {
                 await StopChatAsync();
+                return;
             }
 
-            // --- new_AIAvatar.txt 追加: ExitWord対応 ---
-            // Exit Word
-            else if (!string.IsNullOrEmpty(exitWord))
+            if (!string.IsNullOrEmpty(exitWord))
             {
                 Application.Quit();
 #if UNITY_EDITOR
                 UnityEditor.EditorApplication.isPlaying = false;
 #endif
+                return;
             }
-            // --- ここまで ---
 
-            // Interupt Word
-            else if (!string.IsNullOrEmpty(interruptWord))
+            if (!string.IsNullOrEmpty(interruptWord))
             {
                 await StopChatAsync(continueDialog: true);
+                return;
             }
 
-            // Conversation request (Priority is higher than wake word)
-            else if (Mode >= AvatarMode.Conversation)
+            // Conversation request while listening
+            fillerCts?.Cancel();
+            fillerCts = new CancellationTokenSource();
+
+            var dialogTask = DialogProcessor.StartDialogAsync(text, payloads: GetPayloads?.Invoke()).AttachExternalCancellation(fillerCts.Token);
+            var dialogTaskWithClip = dialogTask.ContinueWith(() => (AudioClip)null);
+
+            if (ModelController != null && ModelController.fillerVoicePlayer != null)
             {
-                // --- new_AIAvatar.txt 追加: フィラー音声再生 ---
-                fillerCts?.Cancel(); // 前回のフィラー再生を必ず止める
-                fillerCts = new CancellationTokenSource();
-
-                var dialogTask = DialogProcessor.StartDialogAsync(text, payloads: GetPayloads?.Invoke()).AttachExternalCancellation(fillerCts.Token);
-                var dialogTaskWithClip = dialogTask.ContinueWith(() => (AudioClip)null);
-
-                if (ModelController != null && ModelController.fillerVoicePlayer != null)
-                {
-                    await ModelController.fillerVoicePlayer.PlayWhileWaitingAsync(dialogTaskWithClip, fillerCts.Token);
-                }
-                else
-                {
-                    await dialogTask;
-                }
-                // --- ここまで ---
+                await ModelController.fillerVoicePlayer.PlayWhileWaitingAsync(dialogTaskWithClip, fillerCts.Token);
             }
-
-            // Wake Word
-            else if (!string.IsNullOrEmpty(ExtractWakeWord(text)))
+            else
             {
-                if (OnWakeAsync != null)
-                {
-                    await OnWakeAsync(text);
-                }
-                var payloads = GetPayloads?.Invoke();
-                if (payloads == null || payloads.Count == 0)
-                {
-                    payloads = new Dictionary<string, object>();
-                }
-                payloads["IsWakeword"] = true;
-                _ = DialogProcessor.StartDialogAsync(text, payloads: payloads);
+                await dialogTask;
             }
         }
 
@@ -1292,23 +1356,45 @@ namespace ChatdollKit
             SpeechListener.StopListening();
             SpeechListener = speechListener;
             SpeechListener.OnRecognized = OnSpeechListenerRecognized;
+            SpeechListener.ChangeSessionConfig(
+                silenceDurationThreshold: idleSilenceDurationThreshold,
+                minRecordingDuration: idleMinRecordingDuration,
+                maxRecordingDuration: idleMaxRecordingDuration
+            );
 
-            // Rewire VAD detection to new listener if possible
-            if (SpeechListener is SpeechListenerBase slBase && sileroVADComponent != null && sileroIsVoicedMethod != null)
+            // Refresh microphone references based on the new listener
+            if (speechListener is Component listenerComponent)
             {
-                slBase.DetectVoiceFunctions = new List<Func<float[], float, bool>>()
+                var attachedMic = listenerComponent.GetComponent<SpeechListener.MicrophoneManager>();
+                if (attachedMic != null)
                 {
-                    (samples, lin) =>
-                    {
-                        try
-                        {
-                            var res = sileroIsVoicedMethod.Invoke(sileroVADComponent, new object[] { samples, lin });
-                            return res is bool b && b;
-                        }
-                        catch { return false; }
-                    }
-                };
+                    micForReading = attachedMic;
+                    microphoneControl = attachedMic;
+                }
             }
+
+            if (micForReading == null)
+            {
+                micForReading = FindFirstObjectByType<SpeechListener.MicrophoneManager>();
+                microphoneControl = (IMicrophoneManager)(micForReading ?? MicrophoneManager);
+            }
+
+            if (micForReading != null)
+            {
+                if (micForReading.OutputAudioSource == null)
+                {
+                    micForReading.OutputAudioSource = (ModelController != null && ModelController.AudioSource != null)
+                        ? ModelController.AudioSource
+                        : GetComponent<AudioSource>();
+                }
+                micForReading.AutoMuteWhileAudioPlaying = true;
+                defaultNoiseGateThresholdDb = micForReading.NoiseGateThresholdDb;
+            }
+
+            // Re-apply current mute state to the refreshed microphone wiring
+            var wasMuted = microphoneMutedByAvatar;
+            speechListenerSuspendedByAvatar = false;
+            ApplyMicrophoneMuteState(wasMuted, force: true);
         }
 
         public class ProcessingPresentation

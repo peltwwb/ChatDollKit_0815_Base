@@ -42,9 +42,6 @@ namespace ChatdollKit.Model
         [SerializeField]
         private bool MuteMicWhileSpeaking = true;
         private ChatdollKit.SpeechListener.MicrophoneManager micManager;
-        #if UNITY_WEBGL && !UNITY_EDITOR
-        private ChatdollKit.Extension.SileroVAD.SileroVADProcessor sileroVAD;
-        #endif
 
         // --- new_ModelController.txt 追加: FillerVoicePlayer関連 ---
         [Header("Filler Voice")]
@@ -125,9 +122,6 @@ namespace ChatdollKit.Model
 
             // Cache microphone manager if attached on the same object
             micManager = gameObject.GetComponent<ChatdollKit.SpeechListener.MicrophoneManager>();
-            #if UNITY_WEBGL && !UNITY_EDITOR
-            sileroVAD = gameObject.GetComponent<ChatdollKit.Extension.SileroVAD.SileroVADProcessor>();
-            #endif
         }
 
         private void Start()
@@ -353,12 +347,6 @@ namespace ChatdollKit.Model
             if (shouldGateMic)
             {
                 micManager.MuteMicrophone(true);
-                #if UNITY_WEBGL && !UNITY_EDITOR
-                if (sileroVAD != null)
-                {
-                    sileroVAD.Mute(true);
-                }
-                #endif
             }
             try
             {
@@ -516,12 +504,6 @@ namespace ChatdollKit.Model
                 if (shouldGateMic)
                 {
                     micManager.MuteMicrophone(false);
-#if UNITY_WEBGL && !UNITY_EDITOR
-                    if (sileroVAD != null)
-                    {
-                        sileroVAD.Mute(false);
-                    }
-#endif
                 }
             }
 

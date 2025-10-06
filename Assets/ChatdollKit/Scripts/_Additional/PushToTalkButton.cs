@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.Reflection;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.UI;
 using ChatdollKit;
 using ChatdollKit.SpeechListener;
 
@@ -28,7 +30,15 @@ public class PushToTalkButton : MonoBehaviour, IPointerDownHandler, IPointerUpHa
     [Tooltip("Max duration cap for safety (sec). Ignored if segmentation disabled.")]
     [SerializeField] private float maxDurationOnReleaseSec = 600f;
 
+    private enum HoldSource
+    {
+        None,
+        UiButton,
+        ScreenClick
+    }
+
     private bool isHolding = false;
+    private HoldSource holdSource = HoldSource.None;
 
     // Backup original listener settings to restore after release
     private float originalSilenceThreshold;
@@ -55,11 +65,58 @@ public class PushToTalkButton : MonoBehaviour, IPointerDownHandler, IPointerUpHa
 
     public void OnPointerDown(PointerEventData eventData)
     {
-        if (speechListener == null) return;
+        if (isHolding) return;
+        if (!CanHold()) return;
+
+        StartHold(HoldSource.UiButton);
+    }
+
+    public void OnPointerUp(PointerEventData eventData)
+    {
+        if (!isHolding) return;
+        if (holdSource != HoldSource.UiButton) return;
+        StopHold();
+    }
+
+    private void Update()
+    {
+        HandleScreenClickDown();
+        HandleScreenClickUp();
+    }
+
+    private void HandleScreenClickDown()
+    {
+        if (isHolding) return;
+        if (!Input.GetMouseButtonDown(0)) return;
+        if (!CanHold()) return;
+        if (IsPointerOverBlockedUI()) return;
+
+        StartHold(HoldSource.ScreenClick);
+    }
+
+    private void HandleScreenClickUp()
+    {
+        if (!Input.GetMouseButtonUp(0)) return;
+        if (!isHolding) return;
+        if (holdSource != HoldSource.ScreenClick) return;
+
+        StopHold();
+    }
+
+    private bool CanHold()
+    {
+        if (speechListener == null) return false;
         if (onlyWhenListening && aiAvatar != null && aiAvatar.Mode != AIAvatar.AvatarMode.Listening)
         {
-            return; // Respect Listening-only behavior
+            return false; // Respect Listening-only behavior
         }
+
+        return true;
+    }
+
+    private void StartHold(HoldSource source)
+    {
+        if (speechListener == null) return;
 
         // Save originals once per hold
         if (!originalsSaved)
@@ -83,12 +140,12 @@ public class PushToTalkButton : MonoBehaviour, IPointerDownHandler, IPointerUpHa
         ForceStartRecording();
 
         isHolding = true;
+        holdSource = source;
     }
 
-    public void OnPointerUp(PointerEventData eventData)
+    private void StopHold()
     {
         if (speechListener == null) return;
-        if (!isHolding) return;
 
         // Restore originals BEFORE we finalize, so the next session started by the listener uses them
         if (originalsSaved)
@@ -104,6 +161,43 @@ public class PushToTalkButton : MonoBehaviour, IPointerDownHandler, IPointerUpHa
         ForceStopRecordingAndTranscribe();
 
         isHolding = false;
+        holdSource = HoldSource.None;
+    }
+
+    private bool IsPointerOverBlockedUI()
+    {
+        var eventSystem = EventSystem.current;
+        if (eventSystem == null)
+        {
+            return false;
+        }
+
+        var pointerData = new PointerEventData(eventSystem) { position = Input.mousePosition };
+        List<RaycastResult> raycastResults = new List<RaycastResult>();
+        eventSystem.RaycastAll(pointerData, raycastResults);
+        for (int i = 0; i < raycastResults.Count; i++)
+        {
+            var target = raycastResults[i].gameObject;
+            if (target == null)
+            {
+                continue;
+            }
+
+            if (target.GetComponent<Button>() != null)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void OnDisable()
+    {
+        if (isHolding)
+        {
+            StopHold();
+        }
     }
 
     // ---- Reflection helpers to control RecordingSession ----

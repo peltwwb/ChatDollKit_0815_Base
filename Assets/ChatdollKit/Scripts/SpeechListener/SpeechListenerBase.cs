@@ -34,6 +34,18 @@ namespace ChatdollKit.SpeechListener
         private RecordingSession session;
         private CancellationTokenSource cancellationTokenSource;
 
+        [Header("Voice Detection Tuning")]
+        [Tooltip("Ratio of samples that must exceed the noise gate to mark as voiced (0.0 - 1.0). Higher values make the VAD less sensitive to noise.")]
+        [Range(0.0f, 1.0f)]
+        [SerializeField]
+        private float volumeDetectionRequiredRatio = 0.05f;
+        [Tooltip("Extra headroom (dB) added on top of the noise gate threshold for peak checks.")]
+        [SerializeField]
+        private float volumeDetectionHeadroomDb = 6.0f;
+        [Tooltip("Minimum RMS headroom (dB) over the gate to classify as voiced when peak ratio is not met.")]
+        [SerializeField]
+        private float volumeDetectionRmsHeadroomDb = 3.0f;
+
         [Header("Segmentation")]
         [Tooltip("If true, long utterances are split into chunks around MaxRecordingDuration. If false, a single long clip is emitted per turn.")]
         public bool SegmentLongRecordings = false;
@@ -94,14 +106,37 @@ namespace ChatdollKit.SpeechListener
 
         public bool IsVoiceDetectedByVolume(float[] samples, float linearThreshold)
         {
+            if (samples == null || samples.Length == 0)
+            {
+                return false;
+            }
+
+            var peakThreshold = linearThreshold * Mathf.Pow(10.0f, volumeDetectionHeadroomDb / 20.0f);
+            var requiredCount = Mathf.Clamp(Mathf.RoundToInt(samples.Length * volumeDetectionRequiredRatio), 1, samples.Length);
+
+            var aboveCount = 0;
             for (var i = 0; i < samples.Length; i++)
             {
-                if (Mathf.Abs(samples[i]) >= linearThreshold)
+                if (Mathf.Abs(samples[i]) >= peakThreshold)
                 {
-                    return true;
+                    aboveCount++;
+                    if (aboveCount >= requiredCount)
+                    {
+                        return true;
+                    }
                 }
             }
-            return false;
+
+            // Fallback to RMS check to handle softer speech that lasts long enough
+            double sum = 0.0;
+            for (var i = 0; i < samples.Length; i++)
+            {
+                sum += samples[i] * samples[i];
+            }
+            var rms = Mathf.Sqrt((float)(sum / samples.Length));
+            var rmsThreshold = linearThreshold * Mathf.Pow(10.0f, volumeDetectionRmsHeadroomDb / 20.0f);
+
+            return rms >= rmsThreshold;
         }
 
         public void StopListening()
