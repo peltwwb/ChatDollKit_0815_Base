@@ -196,6 +196,29 @@ namespace ChatdollKit
         
         // Exposed: whether currently in Listening mode and judged silent
         public bool IsListeningSilent { get; private set; } = false;
+
+        private enum ListeningVoiceMessageState
+        {
+            None,
+            NoInput,
+            Inputting,
+            InputReceived
+        }
+
+        private ListeningVoiceMessageState listeningVoiceMessageState = ListeningVoiceMessageState.None;
+        private bool listeningMessagePrevRecording = false;
+        private bool listeningMessageHadVoiceInRecording = false;
+        private bool listeningMessageRecognizedInRecording = false;
+        private bool listeningMessageSuppressedUntilNextRecording = false;
+        private bool pushToTalkActive = false;
+        [Header("Listening Message Display")]
+        [SerializeField]
+        [Tooltip("Minimum seconds to keep 'input received' status visible before showing transcript. Set 0 to skip.")]
+        private float listeningStatusMinDisplaySeconds = 0.5f;
+        [SerializeField]
+        [Tooltip("Minimum seconds to keep recognized transcript visible before starting AI response. Set 0 to skip.")]
+        private float listeningTranscriptMinDisplaySeconds = 0.5f;
+        private float listeningMessageStateChangedAt = -100f;
         [Header("Listening Silent Blink")]
         [SerializeField]
         private string listeningSilentBlinkFaceName = "Blink";
@@ -418,7 +441,11 @@ namespace ChatdollKit
                         Mode = AvatarMode.Listening;
                         modeTimer = idleTimeout;
                         // Do not switch idling mode here to avoid double control with Main.cs
-                        UserMessageWindow?.Show("【聞いています】");
+                        listeningMessagePrevRecording = false;
+                        listeningMessageHadVoiceInRecording = false;
+                        listeningMessageRecognizedInRecording = false;
+                        listeningMessageSuppressedUntilNextRecording = false;
+                        SetListeningMessage(ListeningVoiceMessageState.NoInput, true);
                         // Listening開始時にModelController側で抑止解除される
                     }
                 }
@@ -621,25 +648,79 @@ namespace ChatdollKit
                 }
             }
 
-            // User message window (Listening... previous style)
-            if (DialogProcessor.Status == DialogProcessor.DialogStatus.Idling)
+            // User message window (Listening status indicator)
+            if (DialogProcessor.Status == DialogProcessor.DialogStatus.Idling && Mode == AvatarMode.Listening)
             {
-                if (Mode == AvatarMode.Listening)
+                bool recordingNowForMessage = SpeechListener != null && SpeechListener.IsRecording;
+                bool voiceActiveForMessage = voiceDetectedNow;
+
+                if (!(SpeechListener is SpeechListenerBase) && recordingNowForMessage)
                 {
-                    // Entered Listening or returned to Idling -> show label
-                    if (Mode != previousMode || DialogProcessor.Status != previousDialogStatus)
+                    voiceActiveForMessage = true;
+                }
+
+                bool newRecordingStarted = recordingNowForMessage && !listeningMessagePrevRecording;
+                if (newRecordingStarted)
+                {
+                    listeningMessageHadVoiceInRecording = false;
+                    listeningMessageRecognizedInRecording = false;
+                    listeningMessageSuppressedUntilNextRecording = false;
+                }
+
+                if (!listeningMessageSuppressedUntilNextRecording)
+                {
+                    if (recordingNowForMessage)
                     {
-                        UserMessageWindow?.Show("【聞いています】");
+                        if (voiceActiveForMessage)
+                        {
+                            listeningMessageHadVoiceInRecording = true;
+                        }
+
+                        if (listeningMessageRecognizedInRecording)
+                        {
+                            SetListeningMessage(ListeningVoiceMessageState.InputReceived);
+                        }
+                        else
+                        {
+                            SetListeningMessage(listeningMessageHadVoiceInRecording
+                                ? ListeningVoiceMessageState.Inputting
+                                : ListeningVoiceMessageState.NoInput);
+                        }
+                    }
+                    else
+                    {
+                        if (listeningMessagePrevRecording)
+                        {
+                            if (listeningMessageRecognizedInRecording)
+                            {
+                                SetListeningMessage(ListeningVoiceMessageState.InputReceived);
+                            }
+                            else
+                            {
+                                SetListeningMessage(ListeningVoiceMessageState.NoInput);
+                            }
+                            listeningMessageHadVoiceInRecording = false;
+                            listeningMessageRecognizedInRecording = false;
+                        }
+                        else if (listeningVoiceMessageState == ListeningVoiceMessageState.None)
+                        {
+                            SetListeningMessage(ListeningVoiceMessageState.NoInput);
+                        }
                     }
                 }
-                else
+
+                listeningMessagePrevRecording = recordingNowForMessage;
+            }
+            else
+            {
+                if (!listeningMessageSuppressedUntilNextRecording && listeningVoiceMessageState != ListeningVoiceMessageState.None)
                 {
-                    // Left Listening -> hide label
-                    if (previousMode == AvatarMode.Listening)
-                    {
-                        UserMessageWindow?.Hide();
-                    }
+                    SetListeningMessage(ListeningVoiceMessageState.None);
                 }
+                listeningMessagePrevRecording = false;
+                listeningMessageHadVoiceInRecording = false;
+                listeningMessageRecognizedInRecording = false;
+                listeningMessageSuppressedUntilNextRecording = false;
             }
 
             // Listening nod trigger based on recorded utterance
@@ -818,6 +899,19 @@ namespace ChatdollKit
                     listeningNodPending = false;
                     listeningNodTriggeredForThisRec = false;
                     listeningNodLastFiredAt = -1f;
+
+                    listeningMessagePrevRecording = false;
+                    listeningMessageHadVoiceInRecording = false;
+                    listeningMessageRecognizedInRecording = false;
+                    listeningMessageSuppressedUntilNextRecording = false;
+                    if (DialogProcessor.Status == DialogProcessor.DialogStatus.Idling)
+                    {
+                        SetListeningMessage(ListeningVoiceMessageState.NoInput, true);
+                    }
+                    else
+                    {
+                        SetListeningMessage(ListeningVoiceMessageState.None, true);
+                    }
                 }
                 // Start/Stop listening base pose
                 if (Mode == AvatarMode.Listening)
@@ -861,6 +955,45 @@ namespace ChatdollKit
 
             previousDialogStatus = DialogProcessor.Status;
             previousMode = Mode;
+        }
+
+        private void SetListeningMessage(ListeningVoiceMessageState state, bool force = false)
+        {
+            if (!force && listeningVoiceMessageState == state)
+            {
+                return;
+            }
+
+            listeningVoiceMessageState = state;
+            listeningMessageStateChangedAt = Time.unscaledTime;
+
+            ApplyListeningMessageDisplay(state);
+        }
+
+        private void ApplyListeningMessageDisplay(ListeningVoiceMessageState state)
+        {
+            if (listeningMessageSuppressedUntilNextRecording && state != ListeningVoiceMessageState.None)
+            {
+                return;
+            }
+
+            var prefix = pushToTalkActive ? "【確実に聞いています】" : "【聞いています】";
+
+            switch (state)
+            {
+                case ListeningVoiceMessageState.None:
+                    UserMessageWindow?.Hide();
+                    break;
+                case ListeningVoiceMessageState.NoInput:
+                    UserMessageWindow?.Show($"{prefix}\n音声は入力されていません");
+                    break;
+                case ListeningVoiceMessageState.Inputting:
+                    UserMessageWindow?.Show($"{prefix}\n音声入力中です");
+                    break;
+                case ListeningVoiceMessageState.InputReceived:
+                    UserMessageWindow?.Show($"{prefix}\n音声が入力されました");
+                    break;
+            }
         }
 
         private void UpdateMode()
@@ -1313,6 +1446,35 @@ namespace ChatdollKit
                 return;
             }
 
+            listeningMessageRecognizedInRecording = true;
+
+            float transcriptShownAt = Time.unscaledTime;
+            bool transcriptDisplayed = false;
+
+            if (DialogProcessor.Status == DialogProcessor.DialogStatus.Idling && Mode == AvatarMode.Listening)
+            {
+                SetListeningMessage(ListeningVoiceMessageState.InputReceived, true);
+                if (UserMessageWindow != null)
+                {
+                    listeningMessageSuppressedUntilNextRecording = true;
+
+                    var statusMin = Mathf.Max(0f, listeningStatusMinDisplaySeconds);
+                    if (statusMin > 0f)
+                    {
+                        var elapsedStatus = Time.unscaledTime - listeningMessageStateChangedAt;
+                        var waitStatus = statusMin - elapsedStatus;
+                        if (waitStatus > 0f)
+                        {
+                            await UniTask.Delay(TimeSpan.FromSeconds(waitStatus), cancellationToken: CancellationToken.None);
+                        }
+                    }
+
+                    await UserMessageWindow.ShowMessageAsync(text, CancellationToken.None);
+                    transcriptShownAt = Time.unscaledTime;
+                    transcriptDisplayed = true;
+                }
+            }
+
             if (!string.IsNullOrEmpty(cancelWord))
             {
                 await StopChatAsync();
@@ -1334,6 +1496,20 @@ namespace ChatdollKit
                 return;
             }
 
+            if (transcriptDisplayed)
+            {
+                var transcriptMin = Mathf.Max(0f, listeningTranscriptMinDisplaySeconds);
+                if (transcriptMin > 0f)
+                {
+                    var elapsedTranscript = Time.unscaledTime - transcriptShownAt;
+                    var waitTranscript = transcriptMin - elapsedTranscript;
+                    if (waitTranscript > 0f)
+                    {
+                        await UniTask.Delay(TimeSpan.FromSeconds(waitTranscript), cancellationToken: CancellationToken.None);
+                    }
+                }
+            }
+
             // Conversation request while listening
             fillerCts?.Cancel();
             fillerCts = new CancellationTokenSource();
@@ -1348,6 +1524,28 @@ namespace ChatdollKit
             else
             {
                 await dialogTask;
+            }
+        }
+
+        public void SetPushToTalkActive(bool active)
+        {
+            if (pushToTalkActive == active)
+            {
+                return;
+            }
+
+            pushToTalkActive = active;
+
+            if (listeningMessageSuppressedUntilNextRecording)
+            {
+                return;
+            }
+
+            if (Mode == AvatarMode.Listening
+                && DialogProcessor.Status == DialogProcessor.DialogStatus.Idling
+                && listeningVoiceMessageState != ListeningVoiceMessageState.None)
+            {
+                ApplyListeningMessageDisplay(listeningVoiceMessageState);
             }
         }
 

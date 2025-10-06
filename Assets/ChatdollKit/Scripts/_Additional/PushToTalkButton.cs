@@ -141,11 +141,31 @@ public class PushToTalkButton : MonoBehaviour, IPointerDownHandler, IPointerUpHa
 
         isHolding = true;
         holdSource = source;
+
+        if (aiAvatar != null)
+        {
+            aiAvatar.SetPushToTalkActive(true);
+        }
     }
 
     private void StopHold()
     {
-        if (speechListener == null) return;
+        if (!isHolding)
+        {
+            return;
+        }
+
+        if (aiAvatar != null)
+        {
+            aiAvatar.SetPushToTalkActive(false);
+        }
+
+        if (speechListener == null)
+        {
+            isHolding = false;
+            holdSource = HoldSource.None;
+            return;
+        }
 
         // Restore originals BEFORE we finalize, so the next session started by the listener uses them
         if (originalsSaved)
