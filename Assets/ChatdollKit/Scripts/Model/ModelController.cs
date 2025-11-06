@@ -72,6 +72,8 @@ namespace ChatdollKit.Model
         public DateTime IdlingModeStartAt { get; private set; } = DateTime.UtcNow;
         private Func<Animation> GetAnimation;
         private Dictionary<string, Animation> registeredAnimations { get; set; } = new Dictionary<string, Animation>();
+        // True while a content-driven animation is active so external hooks skip forcing the speaking base pose
+        public bool ShouldSkipSpeakingBasePose { get; private set; }
 
         // Face Expression
         [Header("Face")]
@@ -242,8 +244,10 @@ namespace ChatdollKit.Model
                 }
 
                 // Animation
-                if (animatedVoice.Animations.Count > 0)
+                var hasCustomAnimation = animatedVoice.Animations != null && animatedVoice.Animations.Count > 0;
+                if (hasCustomAnimation)
                 {
+                    ShouldSkipSpeakingBasePose = true;
                     Animate(animatedVoice.Animations);
                 }
 
@@ -257,7 +261,21 @@ namespace ChatdollKit.Model
                 if (animatedVoice.Voices.Count > 0)
                 {
                     // Wait for the requested voices end
-                    await Say(animatedVoice.Voices, token);
+                    try
+                    {
+                        await Say(animatedVoice.Voices, token);
+                    }
+                    finally
+                    {
+                        if (hasCustomAnimation)
+                        {
+                            ShouldSkipSpeakingBasePose = false;
+                        }
+                    }
+                }
+                else if (hasCustomAnimation)
+                {
+                    ShouldSkipSpeakingBasePose = false;
                 }
             }
 
@@ -267,6 +285,9 @@ namespace ChatdollKit.Model
                 // Do not start idling when cancel requested because the next animated voice request may include animations
                 StartIdling();
             }
+
+            // Ensure the flag is cleared even when the request sequence ends without voices
+            ShouldSkipSpeakingBasePose = false;
         }
 
         public AnimatedVoiceRequest ToAnimatedVoiceRequest(string inputText, string language = null)

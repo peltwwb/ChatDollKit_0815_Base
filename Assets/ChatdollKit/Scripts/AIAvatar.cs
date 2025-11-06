@@ -341,13 +341,16 @@ namespace ChatdollKit
                 // これにより、応答開始まではprocessingAnimationが維持される
                 if (!speakingBaseAppliedThisTurn && ModelController != null && !string.IsNullOrEmpty(speakingBaseParamKey))
                 {
-                    var baseAnim = new Model.Animation(
-                        speakingBaseParamKey,
-                        speakingBaseParamValue,
-                        speakingBaseDuration
-                    );
-                    ModelController.Animate(new List<Model.Animation> { baseAnim });
-                    speakingBaseAppliedThisTurn = true;
+                    if (!ModelController.ShouldSkipSpeakingBasePose)
+                    {
+                        var baseAnim = new Model.Animation(
+                            speakingBaseParamKey,
+                            speakingBaseParamValue,
+                            speakingBaseDuration
+                        );
+                        ModelController.Animate(new List<Model.Animation> { baseAnim });
+                        speakingBaseAppliedThisTurn = true;
+                    }
                 }
             };
             ModelController.OnSayEnd = () =>
