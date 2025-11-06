@@ -364,6 +364,7 @@ namespace ChatdollKit
             {
                 // Exit Listening and enter Conversation immediately when a request arrives
                 // so that Main stops the listening idle loop before processingAnimation starts
+                Debug.Log("[AIAvatar] OnRequestRecievedAsync -> Conversation");
                 Mode = AvatarMode.Conversation;
                 modeTimer = conversationTimeout;
 
@@ -373,17 +374,8 @@ namespace ChatdollKit
                 // Control microphone at first before AI's speech
                 ApplyMicrophoneMuteState(true);
 
-                // Processing開始中はIdleフォールバックを必ず抑止
-                ModelController.SuppressIdleFallback(true);
-
-                // Presentation
-                if (ProcessingPresentations.Count > 0)
-                {
-                    var animAndFace = ProcessingPresentations[UnityEngine.Random.Range(0, ProcessingPresentations.Count)];
-                    ModelController.StopIdling();
-                    ModelController.Animate(animAndFace.Animations);
-                    ModelController.SetFace(animAndFace.Faces);
-                }
+                // Processing開始中のプレゼンテーション
+                ShowProcessingPresentation();
 
                 // Show user message
                 if (UserMessageWindow != null && !string.IsNullOrEmpty(text))
@@ -418,6 +410,7 @@ namespace ChatdollKit
                 // Control microphone after response / error shown
                 ApplyMicrophoneMuteState(false);
 
+                Debug.Log($"[AIAvatar] OnEndAsync endConversation={endConversation}");
                 if (!token.IsCancellationRequested)
                 {
                     if (endConversation)
@@ -460,6 +453,7 @@ namespace ChatdollKit
                 ModelController.StopSpeech();
                 ApplyMicrophoneMuteState(false);
 
+                Debug.Log($"[AIAvatar] OnStopAsync forSuccessiveDialog={forSuccessiveDialog}");
                 // Return to Idle when no successive dialogs are allocated
                 if (!forSuccessiveDialog)
                 {
@@ -561,6 +555,14 @@ namespace ChatdollKit
         {
             UpdateMode();
             UpdateCharacterVolume();
+
+            if (DialogProcessor.Status == DialogProcessor.DialogStatus.Processing
+                && previousDialogStatus != DialogProcessor.DialogStatus.Processing)
+            {
+                // New processing turn started; ensure processing presentation plays
+                speakingBaseAppliedThisTurn = false;
+                ShowProcessingPresentation();
+            }
 
             // Listening + Silent indicator via Blink face
             // Use SpeechListenerBase to read voice activity; fall back to false when unavailable
@@ -879,6 +881,7 @@ namespace ChatdollKit
             // Speech listener config
             if (Mode != previousMode)
             {
+                Debug.Log($"[AIAvatar] Mode change {previousMode} -> {Mode}");
                 // Non-idle modes must keep idle fallback suppressed to avoid flashing the idle pose
                 ModelController?.SuppressIdleFallback(Mode != AvatarMode.Idle);
 
@@ -927,10 +930,12 @@ namespace ChatdollKit
                         var idleAnim = new Model.Animation(listeningBaseParamKey, listeningBaseParamValue, listeningBaseDuration);
                         ModelController.StartListeningIdle(idleAnim);
                     }
+                    Debug.Log("[AIAvatar] Enter Listening");
                 }
                 else if (previousMode == AvatarMode.Listening)
                 {
                     ModelController?.StopListeningIdle();
+                    Debug.Log("[AIAvatar] Exit Listening");
                 }
 
                 if (Mode == AvatarMode.Conversation)
@@ -1035,9 +1040,8 @@ namespace ChatdollKit
             }
             else if (Mode == AvatarMode.Idle)
             {
-                // After idle timer, go to Sleep
-                Mode = AvatarMode.Sleep;
-                modeTimer = 0.0f;
+                // Sleep はまだ実装しないため、Idle のままタイマーをリセット
+                modeTimer = idleTimeout;
             }
         }
 
@@ -1259,6 +1263,35 @@ namespace ChatdollKit
                 Animations = animations,
                 Faces = faces
             });
+        }
+
+        private void ShowProcessingPresentation()
+        {
+            if (ModelController == null)
+            {
+                return;
+            }
+
+            // Ensure idle fallback does not override processing pose
+            ModelController.SuppressIdleFallback(true);
+
+            if (ProcessingPresentations.Count == 0)
+            {
+                return;
+            }
+
+            var animAndFace = ProcessingPresentations[UnityEngine.Random.Range(0, ProcessingPresentations.Count)];
+
+            ModelController.StopIdling();
+            ModelController.StopListeningIdle();
+
+            if (animAndFace?.Animations != null && animAndFace.Animations.Count > 0)
+            {
+                ModelController.Animate(animAndFace.Animations);
+            }
+
+            var faces = animAndFace?.Faces ?? new List<FaceExpression>();
+            ModelController.SetFace(faces);
         }
 
         private void ApplyMicrophoneMuteState(bool mute, bool force = false)
@@ -1513,6 +1546,15 @@ namespace ChatdollKit
                     }
                 }
             }
+
+            if (Mode != AvatarMode.Conversation)
+            {
+                Mode = AvatarMode.Conversation;
+            }
+            modeTimer = conversationTimeout;
+            speakingBaseAppliedThisTurn = false;
+            ApplyMicrophoneMuteState(true);
+            ShowProcessingPresentation();
 
             // Conversation request while listening
             fillerCts?.Cancel();

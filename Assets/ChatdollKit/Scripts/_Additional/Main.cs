@@ -86,7 +86,14 @@ namespace ChatdollKit.Demo
             processingAnimation.Add(modelController.GetRegisteredAnimation("concern_right_hand_front", 20.0f));
             var processingFace = new List<FaceExpression>();
             //processingFace.Add(new FaceExpression("Blink", 3.0f));
-            gameObject.GetComponent<AIAvatar>().AddProcessingPresentaion(processingAnimation, processingFace);
+            if (aiAvatar != null)
+            {
+                aiAvatar.AddProcessingPresentaion(processingAnimation, processingFace);
+            }
+            else
+            {
+                Debug.LogWarning("AIAvatar component was not found when registering processing animation.");
+            }
 
             // Animation and face expression for start up
             var animationOnStart = new List<Model.Animation>();
