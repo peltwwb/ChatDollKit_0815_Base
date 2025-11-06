@@ -9,7 +9,7 @@ using ChatdollKit.SpeechListener;
 
 /// <summary>
 /// Push-to-talk controller for noisy environments.
-/// Press to start recording immediately, release to force-stop and transcribe.
+/// Click to start recording immediately, click again (or wait for timeout) to force-stop and transcribe.
 /// Attach this to a UI element that receives pointer down/up (e.g., a Button).
 /// </summary>
 public class PushToTalkButton : MonoBehaviour, IPointerDownHandler, IPointerUpHandler
@@ -29,16 +29,11 @@ public class PushToTalkButton : MonoBehaviour, IPointerDownHandler, IPointerUpHa
     [SerializeField] private float minDurationOnReleaseSec = 0.1f;
     [Tooltip("Max duration cap for safety (sec). Ignored if segmentation disabled.")]
     [SerializeField] private float maxDurationOnReleaseSec = 600f;
+    [Tooltip("Auto stop duration for toggle mode (sec). Set <= 0 to disable auto stop.")]
+    [SerializeField] private float autoStopDurationSec = 120f;
 
-    private enum HoldSource
-    {
-        None,
-        UiButton,
-        ScreenClick
-    }
-
-    private bool isHolding = false;
-    private HoldSource holdSource = HoldSource.None;
+    private bool isRecording = false;
+    private float recordingStartTime = 0f;
 
     // Backup original listener settings to restore after release
     private float originalSilenceThreshold;
@@ -65,45 +60,38 @@ public class PushToTalkButton : MonoBehaviour, IPointerDownHandler, IPointerUpHa
 
     public void OnPointerDown(PointerEventData eventData)
     {
-        if (isHolding) return;
-        if (!CanHold()) return;
-
-        StartHold(HoldSource.UiButton);
+        ToggleRecording();
     }
 
     public void OnPointerUp(PointerEventData eventData)
     {
-        if (!isHolding) return;
-        if (holdSource != HoldSource.UiButton) return;
-        StopHold();
+        // Toggle handled on pointer down. Pointer up is ignored intentionally.
     }
 
     private void Update()
     {
         HandleScreenClickDown();
-        HandleScreenClickUp();
+        HandleAutoStop();
     }
 
     private void HandleScreenClickDown()
     {
-        if (isHolding) return;
         if (!Input.GetMouseButtonDown(0)) return;
-        if (!CanHold()) return;
         if (IsPointerOverBlockedUI()) return;
 
-        StartHold(HoldSource.ScreenClick);
+        ToggleRecording();
     }
 
-    private void HandleScreenClickUp()
+    private void HandleAutoStop()
     {
-        if (!Input.GetMouseButtonUp(0)) return;
-        if (!isHolding) return;
-        if (holdSource != HoldSource.ScreenClick) return;
+        if (!isRecording) return;
+        if (autoStopDurationSec <= 0f) return;
+        if (Time.time - recordingStartTime < autoStopDurationSec) return;
 
-        StopHold();
+        StopRecording();
     }
 
-    private bool CanHold()
+    private bool CanStartRecording()
     {
         if (speechListener == null) return false;
         if (onlyWhenListening && aiAvatar != null && aiAvatar.Mode != AIAvatar.AvatarMode.Listening)
@@ -114,11 +102,27 @@ public class PushToTalkButton : MonoBehaviour, IPointerDownHandler, IPointerUpHa
         return true;
     }
 
-    private void StartHold(HoldSource source)
+    private void ToggleRecording()
+    {
+        if (isRecording)
+        {
+            StopRecording();
+            return;
+        }
+
+        if (!CanStartRecording())
+        {
+            return;
+        }
+
+        StartRecording();
+    }
+
+    private void StartRecording()
     {
         if (speechListener == null) return;
 
-        // Save originals once per hold
+        // Save originals once per session toggle
         if (!originalsSaved)
         {
             originalSilenceThreshold = speechListener.SilenceDurationThreshold;
@@ -128,19 +132,19 @@ public class PushToTalkButton : MonoBehaviour, IPointerDownHandler, IPointerUpHa
             originalsSaved = true;
         }
 
-        // Configure for push-to-talk (avoid auto-stop by silence while holding)
+        // Configure for push-to-talk (avoid auto-stop by silence while active)
         speechListener.SilenceDurationThreshold = holdSilenceThresholdSec;
         speechListener.MinRecordingDuration = Mathf.Max(0.01f, minDurationOnReleaseSec);
         speechListener.MaxRecordingDuration = Mathf.Max(speechListener.MinRecordingDuration + 0.01f, maxDurationOnReleaseSec);
-        // Disable segmentation while holding so nothing flushes mid-hold
+        // Disable segmentation while active so nothing flushes mid-session
         speechListener.SegmentLongRecordings = false;
 
         // Start a fresh session and force recording immediately
         speechListener.StartListening(stopBeforeStart: true);
         ForceStartRecording();
 
-        isHolding = true;
-        holdSource = source;
+        isRecording = true;
+        recordingStartTime = Time.time;
 
         if (aiAvatar != null)
         {
@@ -148,9 +152,9 @@ public class PushToTalkButton : MonoBehaviour, IPointerDownHandler, IPointerUpHa
         }
     }
 
-    private void StopHold()
+    private void StopRecording()
     {
-        if (!isHolding)
+        if (!isRecording)
         {
             return;
         }
@@ -162,8 +166,8 @@ public class PushToTalkButton : MonoBehaviour, IPointerDownHandler, IPointerUpHa
 
         if (speechListener == null)
         {
-            isHolding = false;
-            holdSource = HoldSource.None;
+            isRecording = false;
+            recordingStartTime = 0f;
             return;
         }
 
@@ -180,8 +184,8 @@ public class PushToTalkButton : MonoBehaviour, IPointerDownHandler, IPointerUpHa
         // Force-stop current recording and trigger transcription
         ForceStopRecordingAndTranscribe();
 
-        isHolding = false;
-        holdSource = HoldSource.None;
+        isRecording = false;
+        recordingStartTime = 0f;
     }
 
     private bool IsPointerOverBlockedUI()
@@ -214,9 +218,9 @@ public class PushToTalkButton : MonoBehaviour, IPointerDownHandler, IPointerUpHa
 
     private void OnDisable()
     {
-        if (isHolding)
+        if (isRecording)
         {
-            StopHold();
+            StopRecording();
         }
     }
 
