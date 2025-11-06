@@ -67,6 +67,7 @@ namespace ChatdollKit.Model
         private Animation currentAnimation { get; set; }
         private Dictionary<string, List<Animation>> idleAnimations = new Dictionary<string, List<Animation>>();
         private Dictionary<string, List<int>> idleWeightedIndexes = new Dictionary<string, List<int>>();
+        private Dictionary<string, int> lastIdleAnimationIndexes = new Dictionary<string, int>();
         private Dictionary<string, FaceExpression> idleFaces = new Dictionary<string, FaceExpression>();
         public string IdlingMode { get; private set; } = "normal";
         public DateTime IdlingModeStartAt { get; private set; } = DateTime.UtcNow;
@@ -185,6 +186,11 @@ namespace ChatdollKit.Model
             {
                 idleAnimations.Add(mode, new List<Animation>());
                 idleWeightedIndexes.Add(mode, new List<int>());
+                lastIdleAnimationIndexes[mode] = -1;
+            }
+            else if (!lastIdleAnimationIndexes.ContainsKey(mode))
+            {
+                lastIdleAnimationIndexes[mode] = -1;
             }
 
             idleAnimations[mode].Add(animation);
@@ -752,12 +758,40 @@ namespace ChatdollKit.Model
 
             if (currentAnimation == null || animationStartAt == 0 || Time.realtimeSinceStartup - animationStartAt > currentAnimation.Duration)
             {
+                if (!idleAnimations.TryGetValue(IdlingMode, out var animationList) || animationList.Count == 0)
+                {
+                    return default;
+                }
+                if (!idleWeightedIndexes.TryGetValue(IdlingMode, out var weightedIndexes) || weightedIndexes.Count == 0)
+                {
+                    return default;
+                }
+
+                // Avoid selecting the same idle animation consecutively when multiple candidates are available.
+                var hasAlternative = animationList.Count > 1;
+                var lastIndex = lastIdleAnimationIndexes.TryGetValue(IdlingMode, out var prevIndex) ? prevIndex : -1;
+                var attempts = 0;
+                var selectedAnimationIndex = -1;
+                do
+                {
+                    var weightedIndex = UnityEngine.Random.Range(0, weightedIndexes.Count);
+                    selectedAnimationIndex = weightedIndexes[weightedIndex];
+                    attempts++;
+                }
+                while (hasAlternative && selectedAnimationIndex == lastIndex && attempts < 4);
+
+                if (selectedAnimationIndex < 0 || selectedAnimationIndex >= animationList.Count)
+                {
+                    selectedAnimationIndex = Mathf.Clamp(selectedAnimationIndex, 0, animationList.Count - 1);
+                }
+
+                lastIdleAnimationIndexes[IdlingMode] = selectedAnimationIndex;
+
                 // Return random idle animation when:
                 // - Animation is not running currently (currentAnimation == null)
                 // - Right after StartIdling() called (animationStartAt == 0)
                 // - Idle animation is timeout (Time.realtimeSinceStartup - animationStartAt > currentAnimation.Duration)
-                var i = UnityEngine.Random.Range(0, idleWeightedIndexes[IdlingMode].Count);
-                return idleAnimations[IdlingMode][idleWeightedIndexes[IdlingMode][i]];
+                return animationList[selectedAnimationIndex];
             }
             else
             {
