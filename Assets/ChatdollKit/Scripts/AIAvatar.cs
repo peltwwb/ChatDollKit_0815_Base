@@ -210,6 +210,8 @@ namespace ChatdollKit
         private bool listeningMessageHadVoiceInRecording = false;
         private bool listeningMessageRecognizedInRecording = false;
         private bool listeningMessageSuppressedUntilNextRecording = false;
+        // Ensure processing animation plays once per recording turn
+        private bool processingPresentationShownForCurrentRecording = false;
         private bool pushToTalkActive = false;
         [Header("Listening Message Display")]
         [SerializeField]
@@ -375,7 +377,7 @@ namespace ChatdollKit
                 ApplyMicrophoneMuteState(true);
 
                 // Processing開始中のプレゼンテーション
-                ShowProcessingPresentation();
+                EnsureProcessingPresentationForCurrentRecording();
 
                 // Show user message
                 if (UserMessageWindow != null && !string.IsNullOrEmpty(text))
@@ -422,6 +424,7 @@ namespace ChatdollKit
                         ModelController.SuppressIdleFallback(false); // Idleへ戻るので抑止解除
                         UserMessageWindow?.Hide();
                         await ModelController.ChangeIdlingModeAsync("normal");
+                        processingPresentationShownForCurrentRecording = false;
                     }
                     else
                     {
@@ -436,6 +439,7 @@ namespace ChatdollKit
 
                         Mode = AvatarMode.Listening;
                         modeTimer = idleTimeout;
+                        processingPresentationShownForCurrentRecording = false;
                         // Do not switch idling mode here to avoid double control with Main.cs
                         listeningMessagePrevRecording = false;
                         listeningMessageHadVoiceInRecording = false;
@@ -463,6 +467,7 @@ namespace ChatdollKit
                     ModelController.SuppressIdleFallback(false); // Idleへ戻るので抑止解除
                     UserMessageWindow?.Hide();
                     await ModelController.ChangeIdlingModeAsync("normal");
+                    processingPresentationShownForCurrentRecording = false;
                 }
             };
 #pragma warning restore CS1998
@@ -520,6 +525,7 @@ namespace ChatdollKit
             };
 
             // Setup SpeechListner
+            SpeechListener.OnTranscriptionStarted = OnSpeechListenerTranscriptionStarted;
             SpeechListener.OnRecognized = OnSpeechListenerRecognized;
             SpeechListener.ChangeSessionConfig(
                 silenceDurationThreshold: idleSilenceDurationThreshold,
@@ -561,7 +567,7 @@ namespace ChatdollKit
             {
                 // New processing turn started; ensure processing presentation plays
                 speakingBaseAppliedThisTurn = false;
-                ShowProcessingPresentation();
+                EnsureProcessingPresentationForCurrentRecording();
             }
 
             // Listening + Silent indicator via Blink face
@@ -670,6 +676,7 @@ namespace ChatdollKit
                     listeningMessageHadVoiceInRecording = false;
                     listeningMessageRecognizedInRecording = false;
                     listeningMessageSuppressedUntilNextRecording = false;
+                    processingPresentationShownForCurrentRecording = false;
                 }
 
                 if (!listeningMessageSuppressedUntilNextRecording)
@@ -726,6 +733,7 @@ namespace ChatdollKit
                 listeningMessageHadVoiceInRecording = false;
                 listeningMessageRecognizedInRecording = false;
                 listeningMessageSuppressedUntilNextRecording = false;
+                processingPresentationShownForCurrentRecording = false;
             }
 
             // Listening nod trigger based on recorded utterance
@@ -1254,6 +1262,7 @@ namespace ChatdollKit
             }
 
             ApplyMicrophoneMuteState(false);
+            processingPresentationShownForCurrentRecording = false;
         }
 
         public void AddProcessingPresentaion(List<Model.Animation> animations, List<FaceExpression> faces)
@@ -1292,6 +1301,22 @@ namespace ChatdollKit
 
             var faces = animAndFace?.Faces ?? new List<FaceExpression>();
             ModelController.SetFace(faces);
+        }
+
+        private void EnsureProcessingPresentationForCurrentRecording()
+        {
+            if (processingPresentationShownForCurrentRecording)
+            {
+                return;
+            }
+
+            if (ModelController == null || ProcessingPresentations.Count == 0)
+            {
+                return;
+            }
+
+            ShowProcessingPresentation();
+            processingPresentationShownForCurrentRecording = true;
         }
 
         private void ApplyMicrophoneMuteState(bool mute, bool force = false)
@@ -1428,6 +1453,15 @@ namespace ChatdollKit
             ApplyMicrophoneMuteState(false);
         }
 
+        private void OnSpeechListenerTranscriptionStarted()
+        {
+            UniTask.Void(async () =>
+            {
+                await UniTask.SwitchToMainThread();
+                EnsureProcessingPresentationForCurrentRecording();
+            });
+        }
+
         private async UniTask OnSpeechListenerRecognized(string text)
         {
             if (string.IsNullOrEmpty(text) || Mode == AvatarMode.Disabled) return;
@@ -1456,6 +1490,7 @@ namespace ChatdollKit
                         payloads = new Dictionary<string, object>();
                     }
                     payloads["IsWakeword"] = true;
+                    EnsureProcessingPresentationForCurrentRecording();
                     _ = DialogProcessor.StartDialogAsync(text, payloads: payloads);
                 }
                 return;
@@ -1554,7 +1589,7 @@ namespace ChatdollKit
             modeTimer = conversationTimeout;
             speakingBaseAppliedThisTurn = false;
             ApplyMicrophoneMuteState(true);
-            ShowProcessingPresentation();
+            EnsureProcessingPresentationForCurrentRecording();
 
             // Conversation request while listening
             fillerCts?.Cancel();

@@ -29,6 +29,7 @@ namespace ChatdollKit.SpeechListener
         public bool IsVoiceDetected { get; private set; }
 
         public Func<string, UniTask> OnRecognized { get; set; }
+        public Action OnTranscriptionStarted { get; set; }
 
         protected MicrophoneManager microphoneManager;
         private RecordingSession session;
@@ -199,6 +200,7 @@ namespace ChatdollKit.SpeechListener
                     samplesToTranscript = samples;
                 }
 
+                OnTranscriptionStarted?.Invoke();
                 var text = await ProcessTranscriptionAsync(samplesToTranscript, sampleRate, token);
                 if (PrintResult)
                 {

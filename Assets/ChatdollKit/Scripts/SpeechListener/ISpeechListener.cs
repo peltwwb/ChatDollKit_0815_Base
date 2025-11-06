@@ -6,6 +6,7 @@ namespace ChatdollKit.SpeechListener
     public interface ISpeechListener
     {
         Func<string, UniTask> OnRecognized { get; set; }
+        Action OnTranscriptionStarted { get; set; }
         bool IsRecording{ get; }
         void StartListening(bool stopBeforeStart = false);
         void StopListening();
