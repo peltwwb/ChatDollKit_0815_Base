@@ -1464,7 +1464,10 @@ namespace ChatdollKit
                 {
                     SetListeningMessage(ListeningVoiceMessageState.InputReceived, true);
                 }
-                EnsureProcessingPresentationForCurrentRecording();
+                if (Mode == AvatarMode.Listening)
+                {
+                    EnsureProcessingPresentationForCurrentRecording();
+                }
             });
         }
 
@@ -1496,7 +1499,6 @@ namespace ChatdollKit
                         payloads = new Dictionary<string, object>();
                     }
                     payloads["IsWakeword"] = true;
-                    EnsureProcessingPresentationForCurrentRecording();
                     _ = DialogProcessor.StartDialogAsync(text, payloads: payloads);
                 }
                 return;
