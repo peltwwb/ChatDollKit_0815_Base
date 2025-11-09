@@ -703,7 +703,7 @@ namespace ChatdollKit
                     {
                         if (listeningMessagePrevRecording)
                         {
-                            if (listeningMessageRecognizedInRecording)
+                            if (listeningMessageRecognizedInRecording || processingPresentationShownForCurrentRecording)
                             {
                                 SetListeningMessage(ListeningVoiceMessageState.InputReceived);
                             }
@@ -1458,6 +1458,12 @@ namespace ChatdollKit
             UniTask.Void(async () =>
             {
                 await UniTask.SwitchToMainThread();
+                if (Mode == AvatarMode.Listening
+                    && DialogProcessor.Status == DialogProcessor.DialogStatus.Idling
+                    && !listeningMessageSuppressedUntilNextRecording)
+                {
+                    SetListeningMessage(ListeningVoiceMessageState.InputReceived, true);
+                }
                 EnsureProcessingPresentationForCurrentRecording();
             });
         }
