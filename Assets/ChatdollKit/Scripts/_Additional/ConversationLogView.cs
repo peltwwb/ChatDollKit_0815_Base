@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using UnityEngine;
 using UnityEngine.UI;
+using TMPro;
 
 namespace ChatdollKit.Additional
 {
@@ -18,8 +19,9 @@ namespace ChatdollKit.Additional
         [SerializeField] private GameObject panelRoot;
         [SerializeField] private ScrollRect scrollRect;
         [SerializeField] private RectTransform contentParent;
-        [SerializeField] private Text dayHeaderTemplate;
-        [SerializeField] private Text entryTemplate;
+        [SerializeField] private TMP_Text dayHeaderTemplate;
+        [SerializeField] private TMP_Text userEntryTemplate;
+        [SerializeField] private TMP_Text characterEntryTemplate;
 
         [Header("Options")]
         [SerializeField] private bool hideOnStart = true;
@@ -27,6 +29,8 @@ namespace ChatdollKit.Additional
         private bool newestFirst = true;
         [SerializeField, Tooltip("Automatically refresh the ScrollView contents when new logs arrive.")]
         private bool refreshWhileVisible = true;
+        [SerializeField, Tooltip("チェックを入れると保存済みログを削除し、完了後オフに戻ります。")]
+        private bool clearLogsRequest;
 
         private readonly List<GameObject> spawnedItems = new List<GameObject>();
 
@@ -42,14 +46,9 @@ namespace ChatdollKit.Additional
                 panelRoot = gameObject;
             }
 
-            if (dayHeaderTemplate != null)
-            {
-                dayHeaderTemplate.gameObject.SetActive(false);
-            }
-            if (entryTemplate != null)
-            {
-                entryTemplate.gameObject.SetActive(false);
-            }
+            DisableTemplate(dayHeaderTemplate);
+            DisableTemplate(userEntryTemplate);
+            DisableTemplate(characterEntryTemplate);
 
             if (logManager != null)
             {
@@ -103,7 +102,7 @@ namespace ChatdollKit.Additional
 
         public void Refresh()
         {
-            if (logManager == null || contentParent == null || dayHeaderTemplate == null || entryTemplate == null)
+            if (!HasValidTemplates())
             {
                 Debug.LogWarning("[ConversationLogView] Missing references. Assign manager, content, and templates.");
                 return;
@@ -114,18 +113,8 @@ namespace ChatdollKit.Additional
             var snapshot = logManager.GetSnapshot(newestFirst);
             foreach (var day in snapshot)
             {
-                var header = Instantiate(dayHeaderTemplate, contentParent);
-                header.text = FormatDate(day.Date);
-                header.gameObject.SetActive(true);
-                spawnedItems.Add(header.gameObject);
-
-                foreach (var turn in day.Turns)
-                {
-                    var entry = Instantiate(entryTemplate, contentParent);
-                    entry.text = FormatTurn(turn);
-                    entry.gameObject.SetActive(true);
-                    spawnedItems.Add(entry.gameObject);
-                }
+                SpawnHeader(day);
+                SpawnTurns(day);
             }
 
             if (scrollRect != null)
@@ -162,6 +151,15 @@ namespace ChatdollKit.Additional
             spawnedItems.Clear();
         }
 
+        private bool HasValidTemplates()
+        {
+            return logManager != null
+                && contentParent != null
+                && dayHeaderTemplate != null
+                && userEntryTemplate != null
+                && characterEntryTemplate != null;
+        }
+
         private static string FormatDate(string dateText)
         {
             if (DateTime.TryParseExact(dateText, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed))
@@ -171,13 +169,89 @@ namespace ChatdollKit.Additional
             return dateText;
         }
 
-        private static string FormatTurn(ConversationLogTurnSnapshot turn)
+        private static string FormatUserTurn(ConversationLogTurnSnapshot turn)
         {
             var timestamp = turn.GetTimestamp().ToLocalTime();
             var label = timestamp.ToString("HH:mm");
             var user = string.IsNullOrWhiteSpace(turn.UserText) ? "-" : turn.UserText;
-            var character = string.IsNullOrWhiteSpace(turn.CharacterText) ? "-" : turn.CharacterText;
-            return $"[{label}] ユーザー\n{user}\n[{label}] キャラクター\n{character}";
+            return $"[{label}] ユーザー\n{user}";
         }
+
+        private static string FormatCharacterTurn(ConversationLogTurnSnapshot turn)
+        {
+            var timestamp = turn.GetTimestamp().ToLocalTime();
+            var label = timestamp.ToString("HH:mm");
+            var character = string.IsNullOrWhiteSpace(turn.CharacterText) ? "-" : turn.CharacterText;
+            return $"[{label}] キャラクター\n{character}";
+        }
+
+        private void SpawnHeader(ConversationLogDaySnapshot day)
+        {
+            var header = Instantiate(dayHeaderTemplate, contentParent);
+            header.text = FormatDate(day.Date);
+            header.alignment = TextAlignmentOptions.Left;
+            header.gameObject.SetActive(true);
+            spawnedItems.Add(header.gameObject);
+        }
+
+        private void SpawnTurns(ConversationLogDaySnapshot day)
+        {
+            foreach (var turn in day.Turns)
+            {
+                if (!string.IsNullOrWhiteSpace(turn.UserText))
+                {
+                    var userEntry = Instantiate(userEntryTemplate, contentParent);
+                    userEntry.text = FormatUserTurn(turn);
+                    userEntry.alignment = TextAlignmentOptions.TopLeft;
+                    userEntry.gameObject.SetActive(true);
+                    spawnedItems.Add(userEntry.gameObject);
+                }
+
+                if (!string.IsNullOrWhiteSpace(turn.CharacterText))
+                {
+                    var characterEntry = Instantiate(characterEntryTemplate, contentParent);
+                    characterEntry.text = FormatCharacterTurn(turn);
+                    characterEntry.alignment = TextAlignmentOptions.TopRight;
+                    characterEntry.gameObject.SetActive(true);
+                    spawnedItems.Add(characterEntry.gameObject);
+                }
+            }
+        }
+
+        private void DisableTemplate(TMP_Text template)
+        {
+            if (template != null)
+            {
+                template.gameObject.SetActive(false);
+            }
+        }
+
+#if UNITY_EDITOR
+        private void OnValidate()
+        {
+            if (!clearLogsRequest)
+            {
+                return;
+            }
+
+            clearLogsRequest = false;
+
+            if (logManager == null)
+            {
+                logManager = GetComponent<ConversationLogManager>() ?? FindFirstObjectByType<ConversationLogManager>();
+            }
+
+            if (logManager == null)
+            {
+                return;
+            }
+
+            logManager.ClearLogs();
+            if (Application.isPlaying)
+            {
+                Refresh();
+            }
+        }
+#endif
     }
 }
