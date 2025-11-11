@@ -36,6 +36,7 @@ namespace ChatdollKit
             Listening,
         }
         public AvatarMode Mode { get; private set; } = AvatarMode.Idle;
+        public bool IsSleeping => Mode == AvatarMode.Sleep;
         private AvatarMode previousMode = AvatarMode.Idle;
 
         [Header("SpeechListener settings")]
@@ -1265,6 +1266,40 @@ namespace ChatdollKit
             processingPresentationShownForCurrentRecording = false;
         }
 
+        public bool TryEnterSleepMode()
+        {
+            if (Mode == AvatarMode.Sleep)
+            {
+                return false;
+            }
+
+            if (Mode != AvatarMode.Idle)
+            {
+                return false;
+            }
+
+            if (DialogProcessor != null && DialogProcessor.Status != DialogProcessor.DialogStatus.Idling)
+            {
+                return false;
+            }
+
+            Mode = AvatarMode.Sleep;
+            modeTimer = 0f;
+            return true;
+        }
+
+        public bool TryWakeFromSleepMode()
+        {
+            if (Mode != AvatarMode.Sleep)
+            {
+                return false;
+            }
+
+            Mode = AvatarMode.Idle;
+            modeTimer = idleTimeout;
+            return true;
+        }
+
         public void AddProcessingPresentaion(List<Model.Animation> animations, List<FaceExpression> faces)
         {
             ProcessingPresentations.Add(new ProcessingPresentation()
@@ -1476,7 +1511,7 @@ namespace ChatdollKit
             if (string.IsNullOrEmpty(text) || Mode == AvatarMode.Disabled) return;
 
             var isListeningMode = Mode == AvatarMode.Listening;
-            var isWakeListeningMode = Mode == AvatarMode.Idle || Mode == AvatarMode.Sleep;
+            var isWakeListeningMode = Mode == AvatarMode.Idle;
 
             if (!isListeningMode && !isWakeListeningMode)
             {

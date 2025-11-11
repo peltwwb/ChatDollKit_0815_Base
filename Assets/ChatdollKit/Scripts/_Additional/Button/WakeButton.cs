@@ -2,12 +2,14 @@ using System.Collections.Generic;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.UI;
+using ChatdollKit;
 using ChatdollKit.Dialog;
 using ChatdollKit.IO;
 
 public class WakeButton : MonoBehaviour
 {
     public DialogProcessor DialogProcessor;
+    [SerializeField] private AIAvatar aiAvatar;
     [Header("Optional microphone components to disable during dialog")]
     [SerializeField] private Behaviour[] micComponents;      // e.g., KeywordDetector, VoiceRecorder
     [SerializeField] private UnityEngine.UI.Button wakeButton;
@@ -15,6 +17,17 @@ public class WakeButton : MonoBehaviour
 
     public async void OnWakeButton()
     {
+        if (aiAvatar == null)
+        {
+            aiAvatar = FindFirstObjectByType<AIAvatar>();
+        }
+
+        if (aiAvatar != null && aiAvatar.IsSleeping)
+        {
+            aiAvatar.TryWakeFromSleepMode();
+            return;
+        }
+
         if (DialogProcessor == null) { return; }
         if (DialogProcessor.Status != DialogProcessor.DialogStatus.Idling) { return; }
 

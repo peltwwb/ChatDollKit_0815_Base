@@ -129,7 +129,8 @@ namespace ChatdollKit.Additional
                 return;
             }
 
-            if (aiAvatar.Mode == AIAvatar.AvatarMode.Disabled)
+            if (aiAvatar.Mode == AIAvatar.AvatarMode.Disabled
+                || aiAvatar.Mode == AIAvatar.AvatarMode.Sleep)
             {
                 return;
             }
