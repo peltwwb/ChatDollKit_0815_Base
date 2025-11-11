@@ -10,9 +10,9 @@ using ChatdollKit.SpeechListener;
 /// <summary>
 /// Push-to-talk controller for noisy environments.
 /// Click to start recording immediately, click again (or wait for timeout) to force-stop and transcribe.
-/// Attach this to a UI element that receives pointer down/up (e.g., a Button).
+/// Works by watching for clicks anywhere on the screen.
 /// </summary>
-public class PushToTalkButton : MonoBehaviour, IPointerDownHandler, IPointerUpHandler
+public class PushToTalk : MonoBehaviour
 {
     [Header("Targets")]
     [Tooltip("AIAvatar to check current mode (optional). If null, will be found in scene.")]
@@ -56,16 +56,6 @@ public class PushToTalkButton : MonoBehaviour, IPointerDownHandler, IPointerUpHa
                 Debug.LogWarning("PushToTalkButton: SpeechListenerBase not found in scene.");
             }
         }
-    }
-
-    public void OnPointerDown(PointerEventData eventData)
-    {
-        ToggleRecording();
-    }
-
-    public void OnPointerUp(PointerEventData eventData)
-    {
-        // Toggle handled on pointer down. Pointer up is ignored intentionally.
     }
 
     private void Update()
