@@ -46,6 +46,7 @@ namespace ChatdollKit.Additional
         private float clickStartedAt = -1f;
         private bool lastAppliedSleeping = false;
         private Coroutine activeFade;
+        private float sleepFaceLastAppliedAt = -1f;
 
         private void Reset()
         {
@@ -98,6 +99,11 @@ namespace ChatdollKit.Additional
                 {
                     RestoreFromSleep();
                 }
+            }
+
+            if (sleepingNow)
+            {
+                MaintainSleepPose();
             }
         }
 
@@ -227,6 +233,7 @@ namespace ChatdollKit.Additional
         private void RestoreFromSleep()
         {
             FadeLights(1f);
+            sleepFaceLastAppliedAt = -1f;
 
             if (modelController == null)
             {
@@ -259,13 +266,54 @@ namespace ChatdollKit.Additional
 
             if (!string.IsNullOrEmpty(sleepFaceName))
             {
-                float duration = sleepFaceDuration <= 0f ? float.PositiveInfinity : sleepFaceDuration;
-                modelController.SetFace(new List<FaceExpression>
-                {
-                    new FaceExpression(sleepFaceName, duration)
-                });
-                modelController.ResetViseme();
+                ApplySleepFaceExpression();
             }
+        }
+
+        private void MaintainSleepPose()
+        {
+            MaintainSleepFace();
+        }
+
+        private void MaintainSleepFace()
+        {
+            if (modelController == null || string.IsNullOrEmpty(sleepFaceName))
+            {
+                return;
+            }
+
+            var currentFace = modelController.GetFaceExpression();
+            bool hasSleepFace = currentFace != null && !string.IsNullOrEmpty(currentFace.Name) && currentFace.Name == sleepFaceName;
+            if (!hasSleepFace)
+            {
+                ApplySleepFaceExpression();
+                return;
+            }
+
+            if (sleepFaceDuration > 0f && !float.IsPositiveInfinity(currentFace.Duration))
+            {
+                float elapsed = Time.unscaledTime - sleepFaceLastAppliedAt;
+                if (sleepFaceLastAppliedAt < 0f || elapsed >= Mathf.Max(0.05f, sleepFaceDuration * 0.9f))
+                {
+                    ApplySleepFaceExpression();
+                }
+            }
+        }
+
+        private void ApplySleepFaceExpression()
+        {
+            if (modelController == null || string.IsNullOrEmpty(sleepFaceName))
+            {
+                return;
+            }
+
+            float duration = sleepFaceDuration <= 0f ? float.PositiveInfinity : sleepFaceDuration;
+            modelController.SetFace(new List<FaceExpression>
+            {
+                new FaceExpression(sleepFaceName, duration)
+            });
+            modelController.ResetViseme();
+            sleepFaceLastAppliedAt = Time.unscaledTime;
         }
 
         private Model.Animation ResolveSleepAnimation()

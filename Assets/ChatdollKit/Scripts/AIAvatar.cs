@@ -38,6 +38,8 @@ namespace ChatdollKit
         public AvatarMode Mode { get; private set; } = AvatarMode.Idle;
         public bool IsSleeping => Mode == AvatarMode.Sleep;
         private AvatarMode previousMode = AvatarMode.Idle;
+        private bool sleepInputSuppressed = false;
+        private bool microphoneMutedBeforeSleep = false;
 
         [Header("SpeechListener settings")]
         public float VoiceRecognitionThresholdDB = -50.0f;
@@ -562,6 +564,7 @@ namespace ChatdollKit
         {
             UpdateMode();
             UpdateCharacterVolume();
+            UpdateSleepInputSuppression();
 
             if (DialogProcessor.Status == DialogProcessor.DialogStatus.Processing
                 && previousDialogStatus != DialogProcessor.DialogStatus.Processing)
@@ -1097,6 +1100,45 @@ namespace ChatdollKit
             characterAudioMixer.SetFloat(characterVolumeParameter, currentCharacterVolumeDb);
         }
 
+        private void UpdateSleepInputSuppression()
+        {
+            if (Mode == AvatarMode.Sleep)
+            {
+                ApplySleepInputSuppression();
+            }
+            else
+            {
+                RestoreSleepInputSuppression();
+            }
+        }
+
+        private void ApplySleepInputSuppression()
+        {
+            if (!sleepInputSuppressed)
+            {
+                microphoneMutedBeforeSleep = microphoneMutedByAvatar;
+                sleepInputSuppressed = true;
+                ApplyMicrophoneMuteState(true, force: true);
+                return;
+            }
+
+            if (!microphoneMutedByAvatar)
+            {
+                ApplyMicrophoneMuteState(true, force: true);
+            }
+        }
+
+        private void RestoreSleepInputSuppression()
+        {
+            if (!sleepInputSuppressed)
+            {
+                return;
+            }
+
+            ApplyMicrophoneMuteState(microphoneMutedBeforeSleep, force: true);
+            sleepInputSuppressed = false;
+        }
+
         private void MuteCharacter(bool mute)
         {
             if (characterAudioMixer == null) return;
@@ -1285,6 +1327,7 @@ namespace ChatdollKit
 
             Mode = AvatarMode.Sleep;
             modeTimer = 0f;
+            ApplySleepInputSuppression();
             return true;
         }
 
@@ -1297,6 +1340,7 @@ namespace ChatdollKit
 
             Mode = AvatarMode.Idle;
             modeTimer = idleTimeout;
+            RestoreSleepInputSuppression();
             return true;
         }
 
